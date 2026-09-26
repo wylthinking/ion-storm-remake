@@ -1,0 +1,14 @@
+{
+  "version": 4,
+  "name": "CustomGameId",
+  "displayName": "自定义游戏",
+  "setup": {
+    "disableOpeningExchange": false,
+    "allowWangZha": true
+  },
+  "cards": {},
+  "combos": {},
+  "deck": {
+    "cards": {}
+  }
+}

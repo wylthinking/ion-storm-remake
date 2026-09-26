@@ -1,0 +1,75 @@
+{
+  "type": "operation",
+  "displayName": "帽子",
+  "description": "打出并标记一张离子；触发标记可获摸牌或行动。",
+  "topColor": "#FF0000",
+  "steps": [
+    {
+      "op": "choose",
+      "from": "self.hand",
+      "where": {
+        "type": "ion",
+        "playableTo": "field"
+      },
+      "count": 1,
+      "as": "x",
+      "empty": "stop"
+    },
+    {
+      "op": "play",
+      "card": "x",
+      "consumeAction": false,
+      "mark": {
+        "name": "BigBully",
+        "owner": "self",
+        "badge": "大恶霸",
+        "reactionPriority": 1,
+        "on": [
+          {
+            "when": "marked.reacted",
+            "do": [
+              {
+                "op": "draw",
+                "to": "event.actor",
+                "n": "1",
+                "scoreTo": "event.actor"
+              },
+              {
+                "op": "action",
+                "to": "event.actor",
+                "add": "1"
+              }
+            ]
+          },
+          {
+            "when": "marked.removed",
+            "where": {
+              "cause": "operation"
+            },
+            "do": [
+              {
+                "op": "action",
+                "to": "event.actor",
+                "add": "1"
+              }
+            ]
+          },
+          {
+            "when": "card.playedBatch",
+            "where": {
+              "name": "marked.name"
+            },
+            "do": [
+              {
+                "op": "draw",
+                "to": "event.actor",
+                "n": "event.matchCount",
+                "scoreTo": "event.actor"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

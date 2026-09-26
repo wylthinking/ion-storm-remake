@@ -1,0 +1,55 @@
+{
+  "type": "operation",
+  "displayName": "批斗",
+  "description": "打出离子，并弃置对手手中可与其反应的离子。",
+  "topColor": "#FF0000",
+  "counterAnyFollow": false,
+  "steps": [
+    {
+      "op": "choose",
+      "from": "players.other",
+      "as": "target",
+      "empty": "illegal"
+    },
+    {
+      "op": "choose",
+      "from": "self.hand",
+      "where": {
+        "type": "ion",
+        "playableTo": "field"
+      },
+      "count": 1,
+      "as": "x",
+      "empty": "illegal"
+    },
+    {
+      "op": "play",
+      "card": "x",
+      "consumeAction": false
+    },
+    {
+      "op": "remove",
+      "from": "player.hand",
+      "target": "target",
+      "where": {
+        "type": "ion",
+        "reactsWith": "x.name"
+      },
+      "to": "discard",
+      "cause": "reaction",
+      "as": "r"
+    },
+    {
+      "op": "if",
+      "test": "r.cards>2",
+      "then": [
+        {
+          "op": "draw",
+          "to": "target",
+          "n": "r.cards-2",
+          "scoreTo": "self"
+        }
+      ]
+    }
+  ]
+}

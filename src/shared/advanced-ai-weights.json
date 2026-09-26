@@ -1,0 +1,420 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-08T12:53:34.347Z",
+  "note": "按玩家人数分别训练出的高级 AI 参数倍率。倍率是相对 advanced-ai.ts 原始硬编码权重的乘数；1 表示保持默认。缺少某人数或某字段时，运行时应按自身回退规则处理。",
+  "defaultMultipliers": {
+    "spent": 1,
+    "reaction": 1,
+    "product": 1,
+    "drawPenalty": 1,
+    "response": 1,
+    "prevention": 1,
+    "strong": 1,
+    "addSodium": 1,
+    "pass": 1,
+    "stateHandDelta": 1,
+    "stateThreat": 1,
+    "stateHandShape": 1,
+    "stateScoringRisk": 1,
+    "handShape": 1
+  },
+  "byPlayerCount": {
+    "2": {
+      "multipliers": {
+        "spent": 1.003096,
+        "reaction": 2.893641,
+        "product": 0.25,
+        "drawPenalty": 3.802181,
+        "response": 1.589622,
+        "prevention": 0.25,
+        "strong": 0.338033,
+        "addSodium": 1.146835,
+        "pass": 0.471534,
+        "stateHandDelta": 1.160476,
+        "stateThreat": 1.842124,
+        "stateHandShape": 0.91771,
+        "stateScoringRisk": 0.499441,
+        "handShape": 0.341463
+      },
+      "source": {
+        "players": 2,
+        "outDir": "artifacts\\advanced-ai-training-batch\\2p",
+        "generation": 35,
+        "result": {
+          "fitness": 659.8122,
+          "winRate": 0.59,
+          "wins": 118,
+          "games": 200,
+          "avgRankScore": 0.59,
+          "avgHandMargin": 2.91,
+          "avgTurns": 22.26
+        }
+      }
+    },
+    "3": {
+      "multipliers": {
+        "spent": 0.367491,
+        "reaction": 2.317937,
+        "product": 0.358889,
+        "drawPenalty": 3.511659,
+        "response": 0.831217,
+        "prevention": 0.356755,
+        "strong": 2.441705,
+        "addSodium": 2.029105,
+        "pass": 0.633127,
+        "stateHandDelta": 0.499359,
+        "stateThreat": 1.326008,
+        "stateHandShape": 0.733066,
+        "stateScoringRisk": 1.009131,
+        "handShape": 0.823123
+      },
+      "source": {
+        "players": 3,
+        "outDir": "artifacts\\advanced-ai-training-batch\\3p",
+        "generation": 27,
+        "result": {
+          "fitness": 523.5509000000001,
+          "winRate": 0.47,
+          "wins": 94,
+          "games": 200,
+          "avgRankScore": 0.47,
+          "avgHandMargin": 2.0725,
+          "avgTurns": 20.97
+        }
+      }
+    },
+    "4": {
+      "multipliers": {
+        "spent": 0.283438,
+        "reaction": 3.79351,
+        "product": 0.307359,
+        "drawPenalty": 3.274228,
+        "response": 1.626196,
+        "prevention": 3.377088,
+        "strong": 2.93933,
+        "addSodium": 1.254496,
+        "pass": 4,
+        "stateHandDelta": 0.25,
+        "stateThreat": 0.980112,
+        "stateHandShape": 0.519459,
+        "stateScoringRisk": 2.502424,
+        "handShape": 0.865487
+      },
+      "source": {
+        "players": 4,
+        "outDir": "artifacts\\advanced-ai-training-batch\\4p",
+        "generation": 39,
+        "result": {
+          "fitness": 372.09903333333335,
+          "winRate": 0.335,
+          "wins": 67,
+          "games": 200,
+          "avgRankScore": 0.335,
+          "avgHandMargin": 1.391666666666666,
+          "avgTurns": 27.81
+        }
+      }
+    },
+    "5": {
+      "multipliers": {
+        "spent": 0.357772,
+        "reaction": 2.032869,
+        "product": 1.754677,
+        "drawPenalty": 0.293343,
+        "response": 0.25,
+        "prevention": 0.636617,
+        "strong": 0.841415,
+        "addSodium": 0.717349,
+        "pass": 0.25,
+        "stateHandDelta": 0.25,
+        "stateThreat": 2.947548,
+        "stateHandShape": 0.266343,
+        "stateScoringRisk": 0.409242,
+        "handShape": 0.25
+      },
+      "source": {
+        "players": 5,
+        "outDir": "artifacts\\advanced-ai-training-batch\\5p",
+        "generation": 39,
+        "result": {
+          "fitness": 348.73765,
+          "winRate": 0.315,
+          "wins": 63,
+          "games": 200,
+          "avgRankScore": 0.315,
+          "avgHandMargin": 1.16375,
+          "avgTurns": 25.745
+        }
+      }
+    },
+    "6": {
+      "multipliers": {
+        "spent": 0.780448,
+        "reaction": 2.337544,
+        "product": 0.806076,
+        "drawPenalty": 1.168512,
+        "response": 2.326073,
+        "prevention": 1.684458,
+        "strong": 3.204836,
+        "addSodium": 1.368754,
+        "pass": 1.115959,
+        "stateHandDelta": 0.30115,
+        "stateThreat": 2.457769,
+        "stateHandShape": 0.514374,
+        "stateScoringRisk": 1.735698,
+        "handShape": 0.810577
+      },
+      "source": {
+        "players": 6,
+        "outDir": "artifacts\\advanced-ai-training-batch\\6p",
+        "generation": 39,
+        "result": {
+          "fitness": 265.8088,
+          "winRate": 0.24,
+          "wins": 48,
+          "games": 200,
+          "avgRankScore": 0.24,
+          "avgHandMargin": 0.9440000000000002,
+          "avgTurns": 31.44
+        }
+      }
+    },
+    "7": {
+      "multipliers": {
+        "spent": 0.501572,
+        "reaction": 2.07724,
+        "product": 1.315108,
+        "drawPenalty": 0.444488,
+        "response": 0.502691,
+        "prevention": 0.896541,
+        "strong": 0.75863,
+        "addSodium": 0.25,
+        "pass": 2.906978,
+        "stateHandDelta": 0.340085,
+        "stateThreat": 0.446674,
+        "stateHandShape": 0.370614,
+        "stateScoringRisk": 2.475272,
+        "handShape": 1.152343
+      },
+      "source": {
+        "players": 7,
+        "outDir": "artifacts\\advanced-ai-training-batch\\7p",
+        "generation": 39,
+        "result": {
+          "fitness": 239.01885000000001,
+          "winRate": 0.215,
+          "wins": 43,
+          "games": 200,
+          "avgRankScore": 0.215,
+          "avgHandMargin": 0.9900000000000003,
+          "avgTurns": 36.705
+        }
+      }
+    },
+    "8": {
+      "multipliers": {
+        "spent": 0.340546,
+        "reaction": 1.858344,
+        "product": 2.233979,
+        "drawPenalty": 0.367863,
+        "response": 0.749924,
+        "prevention": 1.259192,
+        "strong": 0.903528,
+        "addSodium": 0.819579,
+        "pass": 0.547048,
+        "stateHandDelta": 0.313384,
+        "stateThreat": 0.729918,
+        "stateHandShape": 0.374204,
+        "stateScoringRisk": 0.645997,
+        "handShape": 0.369325
+      },
+      "source": {
+        "players": 8,
+        "outDir": "artifacts\\advanced-ai-training-batch\\8p",
+        "generation": 39,
+        "result": {
+          "fitness": 243.82907857142857,
+          "winRate": 0.22,
+          "wins": 44,
+          "games": 200,
+          "avgRankScore": 0.22,
+          "avgHandMargin": 0.8864285714285717,
+          "avgTurns": 28.745
+        }
+      }
+    },
+    "9": {
+      "multipliers": {
+        "spent": 2.807255,
+        "reaction": 1.52028,
+        "product": 1.051787,
+        "drawPenalty": 1.603671,
+        "response": 1.156885,
+        "prevention": 0.950833,
+        "strong": 2.55282,
+        "addSodium": 0.788636,
+        "pass": 1.381397,
+        "stateHandDelta": 2.366887,
+        "stateThreat": 0.657604,
+        "stateHandShape": 0.706634,
+        "stateScoringRisk": 2.32372,
+        "handShape": 0.793031
+      },
+      "source": {
+        "players": 9,
+        "outDir": "artifacts\\advanced-ai-training-batch\\9p",
+        "generation": 39,
+        "result": {
+          "fitness": 181.47394999999997,
+          "winRate": 0.165,
+          "wins": 33,
+          "games": 200,
+          "avgRankScore": 0.165,
+          "avgHandMargin": 0.52375,
+          "avgTurns": 30.535
+        }
+      }
+    },
+    "10": {
+      "multipliers": {
+        "spent": 1.799786,
+        "reaction": 0.987924,
+        "product": 2.634555,
+        "drawPenalty": 1.982562,
+        "response": 1.536327,
+        "prevention": 1.096888,
+        "strong": 0.510393,
+        "addSodium": 1.180634,
+        "pass": 1.192029,
+        "stateHandDelta": 1.569066,
+        "stateThreat": 2.661988,
+        "stateHandShape": 0.537608,
+        "stateScoringRisk": 1.361481,
+        "handShape": 1.185148
+      },
+      "source": {
+        "players": 10,
+        "outDir": "artifacts\\advanced-ai-training-batch\\10p",
+        "generation": 39,
+        "result": {
+          "fitness": 166.59172777777775,
+          "winRate": 0.15,
+          "wins": 30,
+          "games": 200,
+          "avgRankScore": 0.15,
+          "avgHandMargin": 0.6922222222222217,
+          "avgTurns": 31.535
+        }
+      }
+    }
+  },
+  "byMode": {
+    "none": {
+      "byPlayerCount": {
+        "2": {
+          "multipliers": {
+            "spent": 1.334589033899368,
+            "reaction": 3.337655331859533,
+            "product": 0.70451014870853,
+            "drawPenalty": 1.7436461721734073,
+            "response": 1.011079278792385,
+            "prevention": 0.19284124703068115,
+            "strong": 0.1606406221472428,
+            "addSodium": 0.8651102474247814,
+            "pass": 0.6230112883192512,
+            "stateHandDelta": 1,
+            "stateThreat": 1,
+            "stateHandShape": 1,
+            "stateScoringRisk": 1,
+            "handShape": 0.7187336430815736
+          },
+          "source": {
+            "mode": "none",
+            "opponent": "hosted-bot/chooseBotAction",
+            "players": 2,
+            "generation": 39,
+            "result": {
+              "wins": 99,
+              "games": 200,
+              "winRate": 0.495,
+              "avgRankScore": 0.495,
+              "avgHandMargin": 2.23,
+              "avgTurns": 21.845,
+              "fitness": -2926.692249999999
+            },
+            "verified": false
+          }
+        },
+        "3": {
+          "multipliers": {
+            "spent": 0.34324476257556485,
+            "reaction": 2.8869538146245977,
+            "product": 0.6023721345016207,
+            "drawPenalty": 0.30355841606964534,
+            "response": 0.27050719660683265,
+            "prevention": 0.7775566377076246,
+            "strong": 0.6619583073637442,
+            "addSodium": 2.8692942306097042,
+            "pass": 1.1146571527016087,
+            "stateHandDelta": 1,
+            "stateThreat": 1,
+            "stateHandShape": 1,
+            "stateScoringRisk": 1,
+            "handShape": 0.27818081313367343
+          },
+          "source": {
+            "mode": "none",
+            "opponent": "hosted-bot/chooseBotAction",
+            "players": 3,
+            "generation": 39,
+            "result": {
+              "wins": 84,
+              "games": 200,
+              "winRate": 0.42,
+              "avgRankScore": 0.42,
+              "avgHandMargin": 1.7575,
+              "avgTurns": 23.715,
+              "fitness": -5078.460749999999
+            },
+            "verified": false
+          }
+        },
+        "4": {
+          "multipliers": {
+            "spent": 0.283438,
+            "reaction": 3.79351,
+            "product": 0.307359,
+            "drawPenalty": 3.274228,
+            "response": 1.626196,
+            "prevention": 3.377088,
+            "strong": 2.93933,
+            "addSodium": 1.254496,
+            "pass": 4,
+            "stateHandDelta": 1,
+            "stateThreat": 1,
+            "stateHandShape": 1,
+            "stateScoringRisk": 1,
+            "handShape": 0.865487
+          },
+          "source": {
+            "mode": "none",
+            "opponent": "hosted-bot/chooseBotAction",
+            "players": 4,
+            "generation": 39,
+            "result": {
+              "wins": 63,
+              "games": 200,
+              "winRate": 0.315,
+              "avgRankScore": 0.315,
+              "avgHandMargin": 1.0766666666666667,
+              "avgTurns": 31.725,
+              "fitness": -8091.78625
+            },
+            "verified": false
+          }
+        }
+      },
+      "updatedAt": "2026-07-11T09:49:37.424Z"
+    }
+  }
+}

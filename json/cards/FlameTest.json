@@ -1,0 +1,31 @@
+{
+  "type": "operation",
+  "displayName": "焰色",
+  "description": "查看对手手中的焰色离子种类。",
+  "steps": [
+    {
+      "op": "inspect",
+      "player": "choose:other",
+      "revealTo": "self",
+      "cases": [
+        {
+          "where": {
+            "name": "Na^+"
+          },
+          "show": "distinctDisplayNames"
+        },
+        {
+          "where": {
+            "type": "ion",
+            "flameTest": true,
+            "name": {
+              "not": "Na^+"
+            }
+          },
+          "show": "distinctDisplayNames"
+        }
+      ],
+      "empty": "无焰色反应"
+    }
+  ]
+}
