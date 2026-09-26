@@ -327,6 +327,10 @@ interface Room {
   departedPlayerIds?: string[];
   editNotice?: RoomEditNotice;
   statsSettledGameId?: string;
+  /** 「已解散」标记：房主解散、或最后一名真人离开时置上，随后房间会从 DO storage + KV 一并删除。 */
+  disbanded?: boolean;
+  disbandedAt?: number;
+  disbandReason?: string;
   createdAt: number;
   lastActiveAt: number;
 }
@@ -1295,7 +1299,12 @@ export class RoomState {
     if (message.type === "leaveRoom") {
       this.ensureSocketPlayer(socket, message.playerId);
       ensurePlayerAccount(room, message.playerId, actor.id);
-      leaveRoom(room, actor.id, message.playerId);
+      if (leaveRoom(room, actor.id, message.playerId)) {
+        // 最后一个真人走了：整个房间回收，不再写回存储。
+        this.send(socket, "leftRoom", {});
+        await this.recycleRoom(room, "房间里已没有玩家，房间已自动回收");
+        return;
+      }
       await advanceRoomIfNeeded(this.env, room);
       await this.persist(room);
       this.send(socket, "leftRoom", {});
@@ -1653,9 +1662,17 @@ export class RoomState {
     }
     if (operation === "leave") {
       ensurePlayerAccount(room, playerId, actor!.id);
-      leaveRoom(room, actor!.id, playerId);
+      if (leaveRoom(room, actor!.id, playerId)) {
+        await this.recycleRoom(room, "房间里已没有玩家，房间已自动回收");
+        return json({ ok: true, disbanded: true });
+      }
       await advanceRoomIfNeeded(this.env, room);
       await this.persist(room);
+      return json({ ok: true });
+    }
+    if (operation === "disband") {
+      if (!canDisbandRoom(room, actor!.id)) throw new Error("只有房主或最后一名玩家可以解散房间");
+      await this.recycleRoom(room, room.creatorAccountId === actor!.id ? "房主已解散房间" : "最后一名玩家已解散房间");
       return json({ ok: true });
     }
     if (operation === "cancel-autoplay") {
@@ -1707,6 +1724,38 @@ export class RoomState {
     if (room.customRules !== undefined) await this.state.storage.put("customRules", room.customRules);
     const { customRules: _rules, ...light } = room;
     await this.state.storage.put("room", light as Room);
+  }
+
+  /**
+   * 解散房间：先给在线玩家推「已解散」（带原因），再把房间从 DO storage 和旧 KV 里彻底删掉。
+   * 删完 load() 返回 undefined，后续任何请求只会得到「房间不存在或已回收」，房间码立刻可以复用。
+   */
+  private async recycleRoom(room: Room, reason: string): Promise<void> {
+    room.disbanded = true;
+    room.disbandedAt = Date.now();
+    room.disbandReason = reason;
+    // 先把带 disbanded 标记的房间状态推下去，再补一条生命周期事件作为明确信号。
+    this.broadcastRoom(room);
+    for (const [socket, meta] of this.sockets) {
+      if (meta.code !== room.code) continue;
+      // 单个连接出问题不能连带影响后面的 storage.delete / deleteRoom。
+      try {
+        this.send(socket, "roomDisbanded", { message: reason });
+        // 通知之后必须真的断开：客户端收到 roomDisbanded 会把 mode 切回 local，
+        // isOnlineContext() 随即为 false，不会再重连；不关的话这条连接会一直留在
+        // this.sockets 里，meta.code 指向一个已经被删掉的房间。
+        this.sockets.delete(socket);
+        // close 的 reason 上限 123 字节，超了会抛错。
+        socket.close(1000, new TextEncoder().encode(reason).length <= 123 ? reason : undefined);
+      } catch (error) {
+        console.warn("[ws-disband]", error instanceof Error ? error.message : error);
+      }
+    }
+    if (this.state.storage.delete) {
+      await this.state.storage.delete("room");
+      await this.state.storage.delete("customRules");
+    }
+    await deleteRoom(this.env, room.code);
   }
 
   private async maybeDissolveDuel(_room: Room): Promise<boolean> {
@@ -2286,7 +2335,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   const code = roomMatch[1];
   const action = roomMatch[2] ?? "";
   if (env.ION_ROOM_STATE) {
-    const allowedRoomActions = new Set(["get", "rules", "join", "state", "start", "action", "bots", "kick", "edit", "leave", "cancel-autoplay", "heartbeat"]);
+    const allowedRoomActions = new Set(["get", "rules", "join", "state", "start", "action", "bots", "kick", "edit", "leave", "disband", "cancel-autoplay", "heartbeat"]);
     if (!allowedRoomActions.has(action || "get")) {
       await auditWorkerRequest(env, request, actor, "unauthorized-operation", "room-action-whitelist", { code, action });
       return json({ error: "未知 API" }, 404);
@@ -2415,9 +2464,20 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     mustLogin(actor);
     const playerId = String(body?.playerId ?? "");
     ensurePlayerAccount(room, playerId, actor!.id);
-    leaveRoom(room, actor!.id, playerId);
+    if (leaveRoom(room, actor!.id, playerId)) {
+      // 最后一个真人走了：KV 里的房间直接删掉，房间码立刻可以复用。
+      await deleteRoom(env, code);
+      return json({ ok: true, disbanded: true });
+    }
     await advanceRoomIfNeeded(env, room);
     await saveRoom(env, room);
+    return json({ ok: true });
+  }
+  if (action === "disband" && method === "POST") {
+    mustLogin(actor);
+    if (!canDisbandRoom(room, actor!.id)) return json({ error: "只有房主或最后一名玩家可以解散房间" }, 403);
+    // 这条是没配 Durable Object 时的 KV 回退路径，没有 socket 注册表，只能删数据、没法逐个通知在线玩家。
+    await deleteRoom(env, code);
     return json({ ok: true });
   }
   if (action === "cancel-autoplay" && method === "POST") {
@@ -3537,11 +3597,20 @@ function editRoom(
   room.editNotice = createRoomEditNotice(room, owner.nickname);
 }
 
-function leaveRoom(room: Room, actorAccountId: string, playerId: string): void {
+/** 房主本人，或房间里只剩他一个真人（"最后一个玩家"）——这两种身份可以把房间整个解散掉。 */
+function canDisbandRoom(room: Room, actorAccountId: string): boolean {
+  if (room.creatorAccountId === actorAccountId) return true;
+  const humans = room.players.filter((item) => !item.bot);
+  return humans.length <= 1 && humans[0]?.accountId === actorAccountId;
+}
+
+/** 离开房间。返回 true 表示房里已经没有真人了，调用方应当把整个房间回收掉（删存储、释放房间码）。 */
+function leaveRoom(room: Room, actorAccountId: string, playerId: string): boolean {
   if (room.creatorAccountId === actorAccountId) throw new Error("房间创建者不能退出房间");
   const player = room.players.find((item) => item.id === playerId && !item.bot);
   if (!player || player.accountId !== actorAccountId) throw new Error("没有权限退出该席位");
   replaceRoomPlayerWithBot(room, playerId);
+  return room.players.every((item) => item.bot);
 }
 
 function removeRoomPlayer(room: Room, targetId: string): void {
@@ -3723,6 +3792,8 @@ function summarizeRoom(room: Room) {
     roomGamesWon: room.roomGamesWon ?? {},
     editNotice: room.editNotice,
     status: room.game?.status ?? "lobby",
+    disbanded: Boolean(room.disbanded),
+    disbandReason: room.disbandReason ?? null,
     players: room.players.map((p) => ({
       id: p.id,
       nickname: p.nickname,

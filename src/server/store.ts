@@ -50,6 +50,10 @@ export interface Room {
   startAckGameId?: string;
   startAckedPlayerIds?: string[];
   startAckLastSentAtByPlayerId?: Record<string, number>;
+  /** 「已解散」标记：房主解散、或最后一名真人离开时置上，随后房间会从内存 + Redis 一并删除。 */
+  disbanded?: boolean;
+  disbandedAt?: number;
+  disbandReason?: string;
   createdAt: number;
   lastActiveAt: number;
 }
@@ -150,7 +154,8 @@ export class RoomStore {
   async prune(): Promise<void> {
     const now = Date.now();
     for (const [code, room] of this.rooms) {
-      if (now - room.lastActiveAt > TTL_SECONDS * 1000) this.rooms.delete(code);
+      // 走 delete 而不是 this.rooms.delete：Redis 里的副本也要一起删，否则房间码要等 TTL 过期才释放。
+      if (now - room.lastActiveAt > TTL_SECONDS * 1000) await this.delete(code);
     }
   }
 }

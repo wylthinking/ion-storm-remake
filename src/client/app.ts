@@ -799,7 +799,7 @@ type DialogState =
   | { kind: "request"; error?: string }
   | { kind: "review-ticket"; requestId: string; error?: string }
   | { kind: "kick-player"; playerId: string; error?: string }
-  | { kind: "leave-room"; local: boolean; error?: string }
+  | { kind: "leave-room"; local: boolean; error?: string; disband?: boolean }
   | { kind: "edit-room"; error?: string }
   | { kind: "view-room-rules"; selectedCardId?: string }
   | {
@@ -1311,17 +1311,19 @@ function renderGeneralSettingsPane(): string {
 
 /** 综合设置弹窗。三个页签共用同一个 .modal 外壳，内容由 currentSettingsTab 决定。 */
 function renderSettingsModal(): string {
-  // 「用户管理」「工单管理」需要管理员权限。非管理员（含未登录）一律把当前页签拨回「常规设置」，
-  // 既覆盖「弹窗开着时退出登录」，也兜住从别处直接写 currentSettingsTab 的路径。
+  // 「用户管理」无权限就直接不渲染（不置灰）；「工单管理」所有登录用户都能进——普通用户看到的是
+  // 只读的自己的工单列表（见 renderTicketsPane）。未登录时两个页签都不渲染。
   const canManage = isAdminUser(currentUser);
-  if (currentSettingsTab !== "general" && !canManage) currentSettingsTab = "general";
-  const tabs: Array<{ id: SettingsTab; label: string; needAdmin: boolean }> = [
-    { id: "general", label: "常规设置", needAdmin: false },
-    { id: "users", label: "用户管理", needAdmin: true },
-    { id: "tickets", label: "工单管理", needAdmin: true },
+  const available = (tab: SettingsTab): boolean =>
+    tab === "general" || (tab === "tickets" ? Boolean(currentUser) : canManage);
+  // 停在一个当前身份看不到的页签上（弹窗开着时退出登录、别处直接写 currentSettingsTab）就地拨回「常规设置」。
+  if (!available(currentSettingsTab)) currentSettingsTab = "general";
+  const tabs: Array<{ id: SettingsTab; label: string }> = [
+    { id: "general", label: "常规设置" },
+    { id: "users", label: "用户管理" },
+    { id: "tickets", label: "工单管理" },
   ];
-  // 未登录：这两个入口整体不渲染（彻底隐藏）；已登录但非管理员：渲染但置灰并给出提示。
-  const visibleTabs = tabs.filter((tab) => !tab.needAdmin || Boolean(currentUser));
+  const visibleTabs = tabs.filter((tab) => available(tab.id));
   const pane = currentSettingsTab === "users"
     ? renderUsersPane()
     : currentSettingsTab === "tickets"
@@ -1337,8 +1339,7 @@ function renderSettingsModal(): string {
         <div class="settings-tabs" role="tablist">
           ${visibleTabs.map((tab) => {
     const active = currentSettingsTab === tab.id;
-    const locked = tab.needAdmin && !canManage;
-    return `<button class="btn settings-tab${active ? " active" : ""}" role="tab" aria-selected="${active}"${locked ? ` disabled aria-disabled="true" title="需要管理员权限"` : ""} data-act="settings-tab" data-tab="${tab.id}">${tab.label}</button>`;
+    return `<button class="btn settings-tab${active ? " active" : ""}" role="tab" aria-selected="${active}" data-act="settings-tab" data-tab="${tab.id}">${tab.label}</button>`;
   }).join("")}
         </div>
         <div class="settings-pane">${pane}</div>
@@ -1365,6 +1366,8 @@ function render(): void {
   const interaction = captureInteractionSnapshot();
   // 仅起始界面使用「动态牌面背景 + 居中标题 + 底部入口」布局；对局/房间内保持原样。
   // 缓存只在离开起始界面时清空，因此每次重新进入都会重新随机一次背景。
+  // 「本地游戏 / 联机游戏 / 加入房间」三个入口只在起始界面的 .lobby-actions-row 里出现：下面的 topbar
+  // 是 room || game 的界面，在里面再放这三个按钮会让人在对局中途切模式、把当前 room/game 状态冲掉。
   const startScreen = !room && !game;
   if (!startScreen) resetStartScreenBackground();
   app.innerHTML = `
@@ -1399,9 +1402,6 @@ function render(): void {
         <div class="top-actions">
           ${renderAccountControls()}
           <button class="btn" data-act="open-settings">设置</button>
-          <button class="btn" data-act="open-local">本地游戏</button>
-          <button class="btn primary" data-act="open-online">联机游戏</button>
-          <button class="btn" data-act="open-join">加入房间</button>
         </div>
       </header>`}
       ${requestNotice}
@@ -1840,6 +1840,10 @@ function renderRoomPanel(): string {
   const roomPresetLabel = roomPresetId
     ? `预设 ${enabledCustomPresets.find((preset) => preset.id === roomPresetId)?.displayName ?? roomPresetId}`
     : "";
+  // 房主、或房里只剩自己一个真人：按钮语义变成「解散房间」——服务端会把房间整个删掉并释放房间码。
+  // 其余玩家在大厅里是「退出房间」；对局进行中仍按既有策略拦住（bind 里 leave-room 有同一道守卫）。
+  const canDisband = Boolean(currentUser && (currentUser.id === room.creatorAccountId || humanCount <= 1));
+  const leaveHint = !canDisband && isOnlineGameRunning() ? "对局进行中，无法退出房间" : "";
   return `
     <section class="room-panel panel">
       <div>
@@ -1868,6 +1872,7 @@ function renderRoomPanel(): string {
         </div>
       </div>
       <div class="top-actions">
+        <button class="btn danger room-exit" data-act="${canDisband ? "disband-room" : "leave-room"}"${leaveHint ? ` disabled title="${leaveHint}"` : ""}>${canDisband ? "解散房间" : "退出房间"}</button>
         ${renderRefreshButton()}
         <button class="btn" data-act="copy-room-link">复制链接</button>
         ${room.rulesetMode === "custom" ? `<button class="btn" data-act="view-room-rules">查看房间设置</button>` : ""}
@@ -2467,20 +2472,25 @@ function renderActivationRow(code: ActivationCode): string {
 /**
  * 「工单管理」页签的内容。原 renderTicketPage() 的整块模板原样搬过来，
  * 只去掉 renderPageShell 那一层页面骨架，改为返回可直接塞进页签容器的 HTML。
+ * 管理员：完整工单列表 + 批复/回复；普通用户：只读列表（自己提交的内容 + 管理员回复），无操作列。
  */
 function renderTicketsPane(): string {
   if (!currentUser) return `<div class="panel management-denied">请先登录后查看工单。</div>`;
   const admin = isAdminUser(currentUser);
+  // 普通用户这份是只读的：列少一半，且 renderTicketRow 的 !admin 分支根本不输出批复/忽略按钮。
+  const columns = admin
+    ? "<th>类型</th><th>提交用户</th><th>内容</th><th>范围</th><th>状态</th><th>提交时间</th><th>封禁时间</th><th>封禁截止</th><th>封禁执行者</th><th>回复时间</th><th>回复者</th><th>回复</th><th>操作</th>"
+    : "<th>类型</th><th>内容</th><th>状态</th><th>提交时间</th><th>回复时间</th><th>回复</th>";
   return `
         <div class="settings-toolbar"><button class="btn primary" data-act="submit-ticket">提交工单/申请</button></div>
         ${ticketPageError ? `<div class="form-error">${escapeHtml(ticketPageError)}</div>` : ""}
         <div class="user-table-wrap">
           <table class="user-table">
-            <thead><tr>${admin
-      ? "<th>类型</th><th>提交用户</th><th>内容</th><th>范围</th><th>状态</th><th>提交时间</th><th>封禁时间</th><th>封禁截止</th><th>封禁执行者</th><th>回复时间</th><th>回复者</th><th>回复</th><th>操作</th>"
-      : "<th>类型</th><th>内容</th><th>状态</th><th>提交时间</th><th>回复时间</th><th>回复</th>"
-    }</tr></thead>
-            <tbody>${requests.map((request) => renderTicketRow(request, admin)).join("")}</tbody>
+            <thead><tr>${columns}</tr></thead>
+            <tbody>${requests.length
+      ? requests.map((request) => renderTicketRow(request, admin)).join("")
+      : `<tr><td colspan="${admin ? 13 : 6}" class="muted">暂无工单记录</td></tr>`
+    }</tbody>
           </table>
         </div>
   `;
@@ -3429,6 +3439,25 @@ function renderKickPlayerDialog(state: Extract<DialogState, { kind: "kick-player
 
 function renderLeaveRoomDialog(state: Extract<DialogState, { kind: "leave-room" }>): string {
   const target = state.local ? game?.players[0] : room?.players.find((player) => player.id === selfId);
+  if (state.disband) {
+    return `
+    <div class="modal-backdrop">
+      <section class="modal panel kick-dialog">
+        <div class="modal-head"><h2>解散房间</h2><button class="btn ghost" data-act="dialog-close">取消</button></div>
+        ${state.error ? `<div class="form-error">${escapeHtml(state.error)}</div>` : ""}
+        <div class="kick-target">
+          <span class="kick-target-mark">散</span>
+          <div><strong>${escapeHtml(room?.code ?? "当前房间")}</strong><small>${currentUser?.id === room?.creatorAccountId ? "你是房主" : "你是房间里最后一名玩家"}</small></div>
+        </div>
+        <p class="muted">解散后房间会立即从服务器删除并释放房间号，房间里所有玩家都会被请回主界面${game && game.status !== "ended" ? "，当前对局直接作废" : ""}。</p>
+        <div class="top-actions">
+          <button class="btn" data-act="dialog-close">取消</button>
+          <button class="btn danger" data-act="confirm-disband-room">确认解散</button>
+        </div>
+      </section>
+    </div>
+  `;
+  }
   return `
     <div class="modal-backdrop">
       <section class="modal panel kick-dialog">
@@ -5516,12 +5545,20 @@ async function handleAct(action: string, el?: HTMLElement): Promise<void> {
     dialog = { kind: "leave-room", local: mode === "local" };
     render();
   }
+  if (action === "disband-room") {
+    if (mode !== "online" || !room) return;
+    dialog = { kind: "leave-room", local: false, disband: true };
+    render();
+  }
   if (action === "confirm-leave-room") {
     if (el?.dataset.local === "true") {
       location.reload();
       return;
     }
     await exitOnlineRoom();
+  }
+  if (action === "confirm-disband-room") {
+    await disbandOnlineRoom();
   }
   if (action === "restart-local" && mode === "local" && game?.status === "ended") {
     const nextGame = createRulesetRematch(game);
@@ -5817,6 +5854,8 @@ function connectSocket(code: string, contextVersion = gameContextVersion, preser
       applyServerPayload(msg, { sound: true });
     }
     if (msg.type === "leftRoom") leaveRemovedRoom("你已退出房间");
+    // 房主解散 / 最后一个真人离开：服务端已经把这个房间删了，本地直接把状态清干净回主界面。
+    if (msg.type === "roomDisbanded") leaveRemovedRoom(typeof msg.message === "string" && msg.message ? msg.message : "房间已解散");
     if (msg.type === "duelDissolved") {
       toast("决斗房间已结束，请刷新查看终局");
       void manualRefreshState();
@@ -6020,7 +6059,8 @@ async function pollRoomState(code: string, contextVersion = gameContextVersion, 
           error.message.includes("席位不存在") ||
           error.message.includes("房间不存在或已回收"))
       ) {
-        leaveRemovedRoom(error.message.includes("不存在") ? "决斗房间已自动解散" : undefined);
+        // 房间可能是房主解散的，也可能是最后一名玩家离开后被回收的，这里给一个通用的说法。
+        leaveRemovedRoom(error.message.includes("不存在") ? "房间已解散或已被回收" : undefined);
       }
       // Other failures retry on the next interval without noisy intranet toasts.
     } finally {
@@ -6058,11 +6098,28 @@ async function sendOnlineMessage(wsMessage: Record<string, unknown>, httpPath: s
   }
 }
 
+// 统一解析响应。后端没起、跑的是旧版本、或 404 落到 SPA fallback 时回的是 HTML，
+// 直接 res.json() 会抛 "Unexpected end of JSON input"，把「根本没有这个接口」
+// 伪装成解析错误（解散房间那个 404 就是这么被看错的）。这里换成一句能看懂的话，
+// 并且始终带上 status —— refreshAuth 要靠它区分「token 失效」和「后端抖了一下」。
+async function readJsonResponse(res: Response): Promise<any> {
+  const text = await res.text();
+  let data: any;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw Object.assign(
+      new Error(res.ok ? "响应格式异常，请刷新页面后重试" : `接口不存在或后端版本过旧（HTTP ${res.status}）`),
+      { status: res.status },
+    );
+  }
+  if (!res.ok) throw Object.assign(new Error(data?.error ?? data?.message ?? "请求失败"), { status: res.status });
+  return data;
+}
+
 async function httpGet(path: string) {
   const res = await fetch(path, { headers: authHeaders(false) });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "请求失败");
-  return data;
+  return readJsonResponse(res);
 }
 
 async function httpPost(path: string, body: Record<string, unknown>) {
@@ -6071,9 +6128,7 @@ async function httpPost(path: string, body: Record<string, unknown>) {
     headers: authHeaders(),
     body: JSON.stringify(body),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? data.message ?? "请求失败");
-  return data;
+  return readJsonResponse(res);
 }
 
 async function httpPatch(path: string, body: Record<string, unknown>) {
@@ -6082,9 +6137,7 @@ async function httpPatch(path: string, body: Record<string, unknown>) {
     headers: authHeaders(),
     body: JSON.stringify(body),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? data.message ?? "请求失败");
-  return data;
+  return readJsonResponse(res);
 }
 
 async function httpDelete(path: string, body?: unknown) {
@@ -6093,9 +6146,7 @@ async function httpDelete(path: string, body?: unknown) {
     headers: authHeaders(Boolean(body)),
     body: body ? JSON.stringify(body) : undefined,
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? data.message ?? "请求失败");
-  return data;
+  return readJsonResponse(res);
 }
 
 function authHeaders(json = true): HeadersInit {
@@ -6481,6 +6532,28 @@ async function exitOnlineRoom(): Promise<void> {
     if (!isOnlineContext(code, contextVersion)) return;
     roomExitInFlight = false;
     dialog = { kind: "leave-room", local: false, error: error instanceof Error ? error.message : "退出房间失败" };
+    render();
+  }
+}
+
+/**
+ * 解散房间（房主，或房间里只剩自己一个真人时）。走独立的 /disband 接口：服务端会把房间从
+ * 内存/Redis/KV 里彻底删掉、释放房间码，并给房里所有在线玩家推 roomDisbanded。
+ */
+async function disbandOnlineRoom(): Promise<void> {
+  if (!room || roomExitInFlight) return;
+  const code = room.code;
+  const contextVersion = gameContextVersion;
+  roomExitInFlight = true;
+  dialog = null;
+  render();
+  try {
+    await httpPost(`/api/rooms/${code}/disband`, { playerId: selfId });
+    if (isOnlineContext(code, contextVersion)) leaveRemovedRoom("房间已解散");
+  } catch (error) {
+    if (!isOnlineContext(code, contextVersion)) return;
+    roomExitInFlight = false;
+    dialog = { kind: "leave-room", local: false, disband: true, error: error instanceof Error ? error.message : "解散房间失败" };
     render();
   }
 }
@@ -7413,10 +7486,18 @@ async function refreshAuth(): Promise<void> {
     }
     if (!currentUser?.advancedAiAccess) resetAdvancedAiState();
     if (currentUser) await refreshRequestNotifications();
-  } catch {
-    authToken = "";
-    currentUser = undefined;
-    localStorage.removeItem("ionStormAuthToken");
+  } catch (error) {
+    // 只有服务端明确否认这个 token（401/403）才清 session。后端没起来、代理 502、网络抖动一律保留
+    // token，否则刷新一次就被静默登出——设置弹窗会只剩「常规设置」一个页签，看着像权限判定写错了。
+    // 服务端 401/403 都是 res.status(...).json({ error })，所以正常路径一定带得到 status。
+    const status = (error as { status?: number }).status;
+    if (status === 401 || status === 403) {
+      authToken = "";
+      currentUser = undefined;
+      localStorage.removeItem("ionStormAuthToken");
+    } else {
+      toast("登录态校验失败，请确认后端已启动后刷新页面");
+    }
   }
   if (!currentUser && roomCodeFromLocation()) {
     modal = { kind: "auth", mode: "login", username: "", error: "请先登录后加入联机房间" };

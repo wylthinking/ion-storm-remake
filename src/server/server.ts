@@ -881,6 +881,21 @@ app.post("/api/rooms/:code/leave", async (req, res) => {
   }
 });
 
+app.post("/api/rooms/:code/disband", async (req, res) => {
+  try {
+    const room = await mustRoom(req.params.code);
+    const actor = await authFromRequest(req);
+    if (!actor) return res.status(401).json({ error: "请先登录" });
+    if (!canDisbandRoom(room, actor.id)) {
+      return res.status(403).json({ error: "只有房主或最后一名玩家可以解散房间" });
+    }
+    await disbandRoom(room, room.creatorAccountId === actor.id ? "房主已解散房间" : "最后一名玩家已解散房间");
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "解散房间失败" });
+  }
+});
+
 app.post("/api/rooms/:code/heartbeat", async (req, res) => {
   try {
     const room = await store.get(req.params.code);
@@ -897,6 +912,14 @@ app.post("/api/rooms/:code/heartbeat", async (req, res) => {
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "心跳失败" });
   }
+});
+
+// /api 下没有命中的路径统一回 JSON 404。Express 默认 404 是一段 HTML，
+// 前端 httpPost/httpGet 里的 res.json() 会先抛 "Unexpected end of JSON input"，
+// 把「后端根本没有这个接口」伪装成解析错误。看到这条 JSON，说明请求已经打到 Node
+// 后端、只是路径或方法不对（常见原因：进程没重启，或 npm start 跑的仍是旧 dist）。
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "接口不存在：后端可能未重启，或仍在运行旧版本 dist" });
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1530,12 +1553,59 @@ async function editRoom(
   broadcastRoom(room);
 }
 
+/** 房主本人，或房间里只剩他一个真人（"最后一个玩家"）——这两种身份可以把房间整个解散掉。 */
+function canDisbandRoom(room: Room, accountId: string): boolean {
+  if (room.creatorAccountId === accountId) return true;
+  const humans = room.players.filter((item) => !item.bot);
+  return humans.length <= 1 && humans[0]?.accountId === accountId;
+}
+
+/**
+ * 解散房间：先给在线玩家推「已解散」（带原因），再把房间从内存 Map 和 Redis 里彻底删掉，
+ * 顺手清掉这个房间的回合计时器。删完 mustRoom 会直接抛「房间不存在或已回收」，
+ * 房间码（含专属房间号，见 users 的 reservedRoomCodeIsOccupied）立刻可以被重新分配。
+ */
+async function disbandRoom(room: Room, reason: string): Promise<void> {
+  // 已经打完的局先把积分结掉再删，否则解散会把这一局的结算一起吞掉（settleRoomStats 内部按 gameId 去重）。
+  if (room.game?.status === "ended") await settleRoomStats(room);
+  room.disbanded = true;
+  room.disbandedAt = Date.now();
+  room.disbandReason = reason;
+  // 先把房间对象完整推给客户端（summarizeRoom 里带 disbanded），再补一条生命周期事件当作明确信号。
+  broadcastRoom(room);
+  for (const [socket, meta] of sockets) {
+    if (meta.code !== room.code) continue;
+    // 单个连接出问题不能连带影响后面的 clearTimeout / store.delete —— 那才是真正的房间泄漏。
+    try {
+      send(socket, "roomDisbanded", { message: reason });
+      // 通知之后必须真的断开：客户端收到 roomDisbanded 会把 mode 切回 local，
+      // isOnlineContext() 随即为 false，不会再重连；不关的话这条 socket 会一直挂在
+      // sockets 里，meta.code 指向一个已经被删掉的房间（房间号复用后还会串台）。
+      sockets.delete(socket);
+      clearSocketJoinTimer(socket);
+      // close 的 reason 上限 123 字节，超了 ws 会抛 RangeError。
+      socket.close(1000, Buffer.byteLength(reason) <= 123 ? reason : undefined);
+    } catch (error) {
+      console.warn("[ws-disband]", error instanceof Error ? error.message : error);
+    }
+  }
+  const timer = timers.get(room.code);
+  if (timer) clearTimeout(timer);
+  timers.delete(room.code);
+  await store.delete(room.code);
+}
+
 async function leaveRoom(room: Room, actorAccountId: string, playerId: string): Promise<void> {
   if (room.creatorAccountId === actorAccountId) throw new Error("房间创建者不能退出房间");
   const player = room.players.find((item) => item.id === playerId && !item.bot);
   if (!player || player.accountId !== actorAccountId) throw new Error("没有权限退出该席位");
   replaceRoomPlayerWithBot(room, playerId);
   if (room.game?.status === "ended") await settleRoomStats(room);
+  // 最后一个真人走了，房间里只剩 AI：没有理由继续占着内存、Redis 键和房间码，直接回收整个房间。
+  if (room.players.every((item) => item.bot)) {
+    await disbandRoom(room, "房间里已没有玩家，房间已自动回收");
+    return;
+  }
   await store.set(room);
   scheduleTimer(room);
   broadcastRoom(room);
@@ -2168,6 +2238,8 @@ function summarizeRoom(room: Room) {
     duelMode: Boolean(room.duelMode),
     duelKeepAvailable: duelKeepAvailable(room),
     status: room.game?.status ?? "lobby",
+    disbanded: Boolean(room.disbanded),
+    disbandReason: room.disbandReason ?? null,
     roomGamesPlayed: room.roomGamesPlayed ?? {},
     roomGamesWon: room.roomGamesWon ?? {},
     editNotice: room.editNotice,
