@@ -97,6 +97,12 @@ async function loadEnabledCustomPresets(force = false): Promise<void> {
   } finally {
     enabledCustomPresetsLoading = false;
   }
+  // 本地/联机弹窗只在切到「自定义模式」后才读得到这份列表（见 customSourceField），经典模式下
+  // 它渲染不出任何差异。而 openSetupModal 是「先 render、预设异步返回后又 render 一次」：
+  // 第二次 render 会重建整块 DOM，让刚播放的弹窗入场果冻动画直接失效（此时 #app.modal-entering
+  // 已置位，新建的 .modal 拿不到动画类，动画等于没播）。所以这种无可见差异的重渲染直接跳过；
+  // 用户切到自定义模式时，那次 change 事件自己会 render（见 #modalRuleset 的监听）。
+  if (!force && (modal?.kind === "local" || modal?.kind === "online") && modal.ruleset !== "custom") return;
   render();
 }
 
@@ -662,8 +668,15 @@ type ActionChoiceModal = {
 type CreditsModal = { kind: "credits"; fromSettings?: boolean };
 type LuckyModal = { kind: "lucky"; value: number };
 type SettingsModal = { kind: "settings" };
+type LeaderboardModal = { kind: "leaderboard" };
+/** 个人中心弹窗：点用户名 → 下拉菜单 →「个人中心」。这里放账号自己的功能，管理员后台（设置 → 用户管理）只管别人。 */
+type ProfileModal = { kind: "profile" };
+/** 邀请码管理弹窗。原来是占一个路由的独立页面（renderInvitePage + renderPageShell + /invite），现在和排行榜一样改成弹窗。 */
+type InviteModal = { kind: "invite" };
+/** 激活码管理弹窗。原来是独立页面（renderActivationPage + /activation），和邀请码一起改成弹窗。 */
+type ActivationModal = { kind: "activation" };
 type SettingsTab = "general" | "users" | "tickets";
-type ModalState = SetupModal | JoinModal | AuthModal | ActionChoiceModal | CreditsModal | LuckyModal | SettingsModal | null;
+type ModalState = SetupModal | JoinModal | AuthModal | ActionChoiceModal | CreditsModal | LuckyModal | SettingsModal | LeaderboardModal | ProfileModal | InviteModal | ActivationModal | null;
 type InvitationCode = {
   code: string;
   remainingUses: number | null;
@@ -818,6 +831,7 @@ type DialogState =
   | { kind: "reserved-room-codes"; userId: string; codes?: string[]; editingCode?: string; error?: string }
   | { kind: "custom-presets"; error?: string; form?: { id?: string; displayName: string; source: string }; previewResult?: string }
   | { kind: "win-music"; userId: string }
+  | { kind: "profile-edit"; error?: string }
   | { kind: "confirm-logout" }
   | null;
 type DrawAnimation = {
@@ -901,14 +915,14 @@ let dialog: DialogState = null;
 let managedUsers: PublicUser[] = [];
 let userPageError = "";
 let invitations: InvitationCode[] = [];
-let invitePageError = "";
+let inviteModalError = "";
 let permissionsSnapshot: { rolePermissions: Record<UserRole, PermissionRule>; userPermissions: Record<string, Partial<PermissionRule>> } | undefined;
 let customModeLimitsSnapshot: CustomModeLimits | undefined;
 const reservedRoomCodesByUser = new Map<string, string[]>();
 let taxSettings: { taxRatePercent: number; taxWinnerPointsThreshold?: number } | undefined;
 let activationCodes: ActivationCode[] = [];
 let activationRegisteredUserCount = 0;
-let activationPageError = "";
+let activationModalError = "";
 let requests: UserRequestView[] = [];
 let requestSeenThrough = 0;
 let ticketPageError = "";
@@ -1348,19 +1362,87 @@ function renderSettingsModal(): string {
   `;
 }
 
+/**
+ * 个人中心里「专属房间号」能不能用：名下已经有号（= 通过激活码/邀请码兑换拿到过）或超级管理员
+ * （超级管理员是唯一能凭空新增号的角色，见 reservedRoomCodeAccess）。其他管理员角色只能看到入口但置灰。
+ */
+function profileReservedRoomUnlocked(user: PublicUser): boolean {
+  return (user.reservedRoomCodes?.length ?? 0) > 0 || Boolean(user.superAdmin);
+}
+
+/**
+ * 个人中心里「胜利音效」能不能用。上传/删除在服务端要求 hasAdvancedPerk + canManageWinMusic
+ * （见 shared/music-access.ts 与 users.ts 的 setWinMusic），所以这里直接用同一个 hasAdvancedPerk 判断，
+ * 免得出现「按钮可点但服务端拒绝」。hasAdvancedPerk 由激活码授予的 advanced 身份决定（users.ts:2723）。
+ */
+function profileWinMusicUnlocked(user: PublicUser): boolean {
+  return Boolean(user.hasAdvancedPerk);
+}
+
+/**
+ * 个人中心弹窗。入口在 renderAccountControls 的用户名下拉菜单里（未登录时那个菜单根本不存在，
+ * 所以「未登录隐藏入口」是靠不渲染保证的；这里再兜一次底）。
+ * 功能按权限分三档：编辑个人资料 / 兑换码 = 所有登录用户；专属房间号 / 胜利音效 = 已兑换或管理员。
+ * 没解锁时入口置灰并写「需要兑换解锁」，而不是直接隐藏——管理员仍需要知道有这个功能。
+ */
+function renderProfileModal(): string {
+  const user = currentUser;
+  // 弹窗开着时退出登录会让 currentUser 变空：直接不渲染，避免出现空壳弹窗。
+  if (!user) return "";
+  const reservedCodes = sortReservedRoomCodes(user.reservedRoomCodes ?? []);
+  const reservedUnlocked = profileReservedRoomUnlocked(user);
+  const winMusicUnlocked = profileWinMusicUnlocked(user);
+  const reservedVisible = reservedUnlocked || isAdminUser(user);
+  const winMusicVisible = winMusicUnlocked || isAdminUser(user);
+  // 兑换码只影响这两项，所以兑换成功后重新渲染这个弹窗就能看到它们解锁（completeActivationRedemption
+  // 会写回 currentUser 再 render）。
+  const reservedNote = reservedUnlocked
+    ? reservedCodes.length
+      ? `已绑定 ${reservedCodes.length} 个：${reservedCodes.join("、")}`
+      : "暂未绑定房间号"
+    : "需要兑换解锁";
+  const winMusicNote = winMusicUnlocked
+    ? user.hasWinMusic
+      ? "已上传，可试听 / 下载 / 替换"
+      : "尚未上传音效"
+    : "需要兑换解锁";
+  return `
+    <div class="modal-backdrop" data-backdrop-dismiss>
+      <section class="modal panel profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
+        <div class="modal-head"><h2 id="profileTitle">个人中心</h2><button class="btn ghost" data-act="modal-close">关闭</button></div>
+        <div class="profile-head">
+          <strong class="profile-nickname" style="color:${escapeAttr(user.nicknameColor)}">${escapeHtml(user.nickname)}</strong>
+          <span class="username-text">@${escapeHtml(user.username)}</span>
+          <span class="profile-meta">${escapeHtml(user.subtitle ?? roleLabel(user.role))} · ${user.points} 积分 · 胜局 ${user.gamesWon}/${user.gamesPlayed}</span>
+        </div>
+        <div class="profile-entries">
+          <button class="btn profile-entry" data-act="edit-profile">
+            <span class="profile-entry-name">编辑个人资料</span>
+            <span class="profile-entry-note">${user.nicknameChangeDisabled ? "当前账号已被禁止自行修改昵称" : "修改昵称与密码"}</span>
+          </button>
+          <button class="btn profile-entry" data-act="redeem-activation">
+            <span class="profile-entry-name">兑换码 / 激活码</span>
+            <span class="profile-entry-note">兑换积分、身份与专属功能</span>
+          </button>
+          ${reservedVisible ? `<button class="btn profile-entry" data-act="open-reserved-room-codes" data-user-id="${escapeAttr(user.id)}"${reservedUnlocked ? "" : " disabled"}>
+            <span class="profile-entry-name">专属房间号</span>
+            <span class="profile-entry-note">${escapeHtml(reservedNote)}</span>
+          </button>` : ""}
+          ${winMusicVisible ? `<button class="btn profile-entry" data-act="open-win-music" data-user-id="${escapeAttr(user.id)}"${winMusicUnlocked ? "" : " disabled"}>
+            <span class="profile-entry-name">胜利音效</span>
+            <span class="profile-entry-note">${escapeHtml(winMusicNote)}</span>
+          </button>` : ""}
+        </div>
+        <p class="muted profile-footnote">这里是账号自己的功能；用户列表、禁用/启用、权限与积分调整在「设置 → 用户管理」，工单在「设置 → 工单管理」。</p>
+      </section>
+    </div>
+  `;
+}
+
 function render(): void {
-  if (location.pathname === "/invite") {
-    renderInvitePage();
-    return;
-  }
-  if (location.pathname === "/activation") {
-    renderActivationPage();
-    return;
-  }
-  if (location.pathname === "/leaderboard") {
-    renderLeaderboardPage();
-    return;
-  }
+  // 这里原来有 /invite 与 /activation 两个短路分支（整块接管 #app，走 renderPageShell 页面骨架）。
+  // 两者都已改成弹窗（renderInviteModal / renderActivationModal），由 renderModal() 统一输出，
+  // 所以分支删掉：留着的话弹窗永远轮不到渲染，而且页面骨架那条路径拿不到入场动画的门控。
   syncDrawModal();
   const requestNotice = renderRequestNotice();
   const interaction = captureInteractionSnapshot();
@@ -1370,6 +1452,13 @@ function render(): void {
   // 是 room || game 的界面，在里面再放这三个按钮会让人在对局中途切模式、把当前 room/game 状态冲掉。
   const startScreen = !room && !game;
   if (!startScreen) resetStartScreenBackground();
+  // 五层浮层先各自渲染成字符串：既要塞进下面的模板，也要用来算末尾那个入场动画门控的「浮层身份签名」。
+  // 顺序不能动：modal 在前、dialog 在后（dialog 永远叠在 modal 上），密码确认 / 开局换牌 / 终局再往上叠。
+  const modalLayer = renderModal();
+  const dialogLayer = renderDialog();
+  const passwordLayer = renderPasswordConfirm();
+  const exchangeLayer = renderOpeningExchangeModal();
+  const winLayer = renderWinModal();
   app.innerHTML = `
     <div class="shell ${requestNotice ? "has-request-notice" : ""}${startScreen ? " start-screen" : ""}">
       ${startScreen
@@ -1417,18 +1506,32 @@ function render(): void {
       </main>
       ${renderDrawAnimations()}
       <div id="cardDescriptionBubble" class="card-description-bubble" role="tooltip" hidden></div>
-      ${renderModal()}
-      ${renderDialog()}
-      ${renderPasswordConfirm()}
-      ${renderOpeningExchangeModal()}
-      ${renderWinModal()}
+      ${modalLayer}
+      ${dialogLayer}
+      ${passwordLayer}
+      ${exchangeLayer}
+      ${winLayer}
     </div>
   `;
-  // 弹窗入场动画只在弹窗「新出现」的那一次渲染播放，之后的重渲染不重放。
+  // 弹窗入场动画只在「新的一层浮层出现」的那一次渲染播放，之后的重渲染不重放。
   // 门控状态存在 #app 自身（与 dataset.renderScope 同一套做法），不新增模块级变量。
+  // 这里存的是当前浮层的「身份签名」（哪一层 + 是什么弹窗），而不是「有没有弹窗」：
+  // 只记有没有的话，「设置 → 权限」「邀请码 → 编辑邀请码」「设置 → 编辑用户 → 确认密码」这类
+  // 弹窗换弹窗 / 弹窗叠弹窗的路径上，新弹窗出现时门控里记的还是上一层，拿不到 modal-entering，
+  // 果冻回弹等于没播。改成比签名后：身份一变（就是开了新弹窗）就重播，而同一个弹窗因为输入、
+  // 报错、计时等原因重渲染时签名不变，仍然不会重播——「同一弹窗不重复播放」这条语义保住了。
+  // 注意：styles.css 那边用 .modal-backdrop:last-child 把动画限定在最上面那一层，
+  // 所以下面这五层的输出顺序就是「谁是最后一层」的唯一依据，不能随意调换。
+  const overlaySignature = [
+    modalLayer ? `modal:${modal?.kind ?? ""}` : "",
+    dialogLayer ? `dialog:${dialog?.kind ?? ""}` : "",
+    passwordLayer ? "confirm-password" : "",
+    exchangeLayer ? "opening-exchange" : "",
+    winLayer ? "win" : "",
+  ].join("+");
   const hasModalBackdrop = app.querySelector(".modal-backdrop") !== null;
-  app.classList.toggle("modal-entering", hasModalBackdrop && app.dataset.modalShown !== "1");
-  app.dataset.modalShown = hasModalBackdrop ? "1" : "";
+  app.classList.toggle("modal-entering", hasModalBackdrop && app.dataset.modalOverlay !== overlaySignature);
+  app.dataset.modalOverlay = hasModalBackdrop ? overlaySignature : "";
   if (startScreen) ensureStartScreenBackground();
   scheduleLocalOpeningExchange();
   bind();
@@ -1703,6 +1806,7 @@ function renderAccountControls(options: { leaderboard?: boolean; menuOnly?: bool
       </button>
       ${accountMenuOpen && !hideExit
       ? `<div class="account-menu-popover">
+              <button class="btn" data-act="open-profile">个人中心</button>
               <button class="btn danger" data-act="request-logout">退出登录</button>
             </div>`
       : ""
@@ -2125,6 +2229,27 @@ function renderModal(): string {
   if (modal.kind === "settings") {
     return renderSettingsModal();
   }
+  if (modal.kind === "leaderboard") {
+    return renderLeaderboardModal();
+  }
+  if (modal.kind === "profile") {
+    // 弹窗开着时退出登录（或 refreshAuth 撞上 401 清空 currentUser）会让它没有内容可渲染。
+    // 顺手把状态也清掉——否则下次登录时这个 modal 会突然自己弹出来（renderProfileModal 只能返回空串）。
+    // 和 renderSettingsModal 里「停在不该看的页签就拨回常规设置」是同一种就地纠正。
+    if (!currentUser) {
+      modal = null;
+      return "";
+    }
+    return renderProfileModal();
+  }
+  if (modal.kind === "invite") {
+    // 权限不足时不在这里清 modal：renderInviteModal 自己会输出「只有超级管理员可以访问」的拒绝面板，
+    // 和它还是独立页面时的表现一致（那时也是靠 renderInvitePage 里的 allowed 兜底）。
+    return renderInviteModal();
+  }
+  if (modal.kind === "activation") {
+    return renderActivationModal();
+  }
   if (modal.kind === "lucky") {
     return `
       <div class="modal-backdrop" data-backdrop-dismiss>
@@ -2278,52 +2403,32 @@ function renderModal(): string {
   return "";
 }
 
-function renderPageShell(title: string, body: string, actions = ""): void {
-  const interaction = captureInteractionSnapshot();
-  app.innerHTML = `
-    <div class="shell management-shell">
-      <header class="topbar">
-        <div class="brand">
-          <button class="mark" type="button" data-act="open-lucky" aria-label="查看今日幸运值">Ion</button>
-          <div><h1>${title}</h1><span>离子风暴管理中心</span></div>
-        </div>
-        <div id="timer" class="timer"><strong>--</strong><span>管理</span></div>
-        <div class="top-actions">
-          ${actions}
-          <button class="btn" data-act="go-home">返回主界面</button>
-        </div>
-      </header>
-      <main class="management-page">
-        ${body}
-      </main>
-      ${renderDialog()}
-      ${renderPasswordConfirm()}
-      ${renderModal()}
-    </div>
-  `;
-  bind();
-  restoreInteractionSnapshot(interaction);
-}
-
 /**
- * 「用户管理」页签的内容。原 renderUserPage() 的整块模板原样搬过来，
+ * 「用户管理」页签的内容，也就是管理员后台。原 renderUserPage() 的整块模板原样搬过来，
  * 只去掉 renderPageShell 那一层页面骨架，改为返回可直接塞进页签容器的 HTML。
+ * 这里只保留管理别人的工具：用户列表、禁用/启用、身份与权限、积分调整、批量操作。
+ * 「编辑个人资料」「专属房间号」「胜利音效」「兑换码」都已移到个人中心（renderProfileModal），
+ * 「工单/申请」在「工单管理」页签里（renderTicketsPane），所以这个工具条里都不再出现。
  */
 function renderUsersPane(): string {
   const self = currentUser;
   const superAdmin = Boolean(self?.superAdmin);
   if (!self) return `<div class="panel management-denied">请先登录后管理用户。</div>`;
+  // 工具条里剩下的按钮全是超级管理员功能，所以普通管理员（role=admin / admin-advanced）没有这一条；
+  // 与其渲染一个空白的 .settings-toolbar（它自带 margin-bottom），不如整条不输出。
+  const toolbar = superAdmin
+    ? `<div class="settings-toolbar">
+          <button class="btn" data-act="download-users-csv">下载 CSV</button>
+          <button class="btn" data-act="go-invite">邀请码</button>
+          <button class="btn" data-act="go-activation">激活码</button>
+          <button class="btn" data-act="edit-permissions">权限</button>
+          <button class="btn" data-act="edit-custom-presets">自定义模式</button>
+          <button class="btn" data-act="edit-tax-settings">税收管理</button>
+          <button class="btn" data-act="bulk-grant-points">批量操作</button>
+        </div>`
+    : "";
   return `
-        <div class="settings-toolbar">
-          ${superAdmin ? `<button class="btn" data-act="download-users-csv">下载 CSV</button>` : ""}
-          ${superAdmin ? `<button class="btn" data-act="go-invite">邀请码</button>` : ""}
-          ${superAdmin ? `<button class="btn" data-act="go-activation">激活码</button>` : ""}
-          ${superAdmin ? `<button class="btn" data-act="edit-permissions">权限</button>` : ""}
-          ${superAdmin ? `<button class="btn" data-act="edit-custom-presets">自定义模式</button>` : ""}
-          ${superAdmin ? `<button class="btn" data-act="edit-tax-settings">税收管理</button>` : ""}
-          <button class="btn" data-act="redeem-activation">兑换激活码</button>
-          <button class="btn" data-act="submit-ticket">工单/申请</button>
-        </div>
+        ${toolbar}
         ${userPageError ? `<div class="form-error">${escapeHtml(userPageError)}</div>` : ""}
         <div class="user-table-wrap">
           <table class="user-table user-management-table">
@@ -2345,14 +2450,9 @@ function renderUserRow(user: PublicUser, self?: PublicUser): string {
   const canSuperManage = Boolean(self?.superAdmin && !user.superAdmin);
   const canSelfLeaderboardManage = Boolean(self?.superAdmin && isSelf);
   const canAdminManage = Boolean(self && (self.role === "admin" || self.role === "admin-advanced") && user.role !== "admin" && user.role !== "admin-advanced" && !user.superAdmin);
-  const musicAccess = winMusicControlAccess(user, self);
-  const musicControls = musicAccess.canManage || musicAccess.canDownload
-    ? `<button class="btn" data-act="open-win-music" data-user-id="${escapeAttr(user.id)}">胜利音效</button>`
-    : "";
-  const canManageReservedCodes = Boolean(
-    isSelf || self?.superAdmin || (self && (self.role === "admin" || self.role === "admin-advanced") &&
-      (user.role === "advanced" || user.role === "normal") && !user.superAdmin),
-  );
+  // 「编辑」在这里是管理员工具（身份/权限/自定义额度/高级 AI/税率/禁用范围），不是「编辑个人资料」——
+  // 个人资料（昵称、密码）已移到个人中心，见 renderProfileDialog。
+  // 「专属房间号」「胜利音效」原本挤在这一列里，现在也归个人中心（renderProfileModal 的两个入口）。
   return `
     <tr class="user-row" data-user-id="${escapeAttr(user.id)}">
       <td><strong style="color:${escapeAttr(user.nicknameColor)}">${escapeHtml(user.nickname)}</strong></td>
@@ -2371,31 +2471,44 @@ function renderUserRow(user: PublicUser, self?: PublicUser): string {
         <button class="btn primary" data-act="open-user-edit" data-user-id="${escapeAttr(user.id)}">编辑</button>
         ${canSuperManage || canAdminManage || canSelfLeaderboardManage ? `<button class="btn warn" data-act="open-user-disable" data-user-id="${escapeAttr(user.id)}">${user.disabled || user.hiddenFromLeaderboard ? "解禁/禁用" : "禁用"}</button>` : ""}
         ${canSuperManage ? `<button class="btn warn" data-act="delete-user" data-user-id="${escapeAttr(user.id)}">删除</button>` : ""}
-        ${canManageReservedCodes ? `<button class="btn" data-act="open-reserved-room-codes" data-user-id="${escapeAttr(user.id)}">专属房间号</button>` : ""}
-        ${musicControls}
       </td>
     </tr>
   `;
 }
 
-function renderInvitePage(): void {
+/**
+ * 「邀请码」弹窗。入口是「设置 → 用户管理」工具条上的「邀请码」。
+ * 原来是占一个路由的独立页面（renderInvitePage + renderPageShell + /invite 短路分支），
+ * 现在和「设置」「排行榜」同一层：结构仍是 .modal-backdrop > section.modal，因此直接吃到
+ * #app.modal-entering 的入场动画——页面骨架那条路径没有这个门控，原来在 /invite 上点「编辑邀请码」
+ * 是完全没有果冻回弹的。列多（16 列），宽度沿用设置弹窗那一档，靠 .user-table-wrap 横向滚动。
+ */
+function renderInviteModal(): string {
   const allowed = Boolean(currentUser?.superAdmin);
   const body = !allowed
     ? `<div class="panel management-denied">只有超级管理员可以访问邀请码管理。</div>`
     : `
-      ${invitePageError ? `<div class="form-error">${escapeHtml(invitePageError)}</div>` : ""}
-      <div class="user-table-wrap">
-        <table class="user-table">
-          <thead>
-            <tr><th>邀请码</th><th>注册额度</th><th>已注册</th><th>失效时间</th><th>注册身份</th><th>初始积分</th><th>初始头衔</th><th>昵称颜色</th><th>专属房间号</th><th>初始权限</th><th>自定义模式额度</th><th>管理员期限</th><th>高级期限</th><th>高级 AI</th><th>创建时间</th><th>操作</th></tr>
-          </thead>
-          <tbody>
-            ${invitations.map(renderInviteRow).join("")}
-          </tbody>
-        </table>
-      </div>
-    `;
-  renderPageShell("邀请码管理", body, allowed ? `<button class="btn primary" data-act="new-invite">新邀请码</button>` : "");
+        <div class="settings-toolbar"><button class="btn primary" data-act="new-invite">新邀请码</button></div>
+        ${inviteModalError ? `<div class="form-error">${escapeHtml(inviteModalError)}</div>` : ""}
+        <div class="user-table-wrap">
+          <table class="user-table">
+            <thead>
+              <tr><th>邀请码</th><th>注册额度</th><th>已注册</th><th>失效时间</th><th>注册身份</th><th>初始积分</th><th>初始头衔</th><th>昵称颜色</th><th>专属房间号</th><th>初始权限</th><th>自定义模式额度</th><th>管理员期限</th><th>高级期限</th><th>高级 AI</th><th>创建时间</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              ${invitations.map(renderInviteRow).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+  return `
+    <div class="modal-backdrop" data-backdrop-dismiss>
+      <section class="modal panel invite-dialog" role="dialog" aria-modal="true" aria-labelledby="inviteTitle">
+        <div class="modal-head"><h2 id="inviteTitle">邀请码管理</h2><button class="btn ghost" data-act="modal-close">关闭</button></div>
+        ${body}
+      </section>
+    </div>
+  `;
 }
 
 function renderInviteRow(invite: InvitationCode): string {
@@ -2421,26 +2534,33 @@ function renderInviteRow(invite: InvitationCode): string {
   `;
 }
 
-function renderActivationPage(): void {
+/** 「激活码」弹窗。原独立页面（renderActivationPage + /activation）搬过来，理由同 renderInviteModal。 */
+function renderActivationModal(): string {
   const allowed = Boolean(currentUser?.superAdmin);
   const body = !allowed
     ? `<div class="panel management-denied">只有超级管理员可以访问激活码管理。</div>`
     : `
-      ${activationPageError ? `<div class="form-error">${escapeHtml(activationPageError)}</div>` : ""}
-      <div class="user-table-wrap">
-        <table class="user-table activation-management-table">
-          <thead><tr><th>激活码</th><th>类型/策略</th><th>次数</th><th>滚动周期</th><th>失效时间</th><th>积分</th><th>头衔</th><th>昵称颜色</th><th>专属房间号</th><th>管理员</th><th>高级用户</th><th>高级 AI</th><th class="management-permission-column">权限</th><th>自定义模式额度</th><th>已使用</th><th>操作</th></tr></thead>
-          <tbody>${activationCodes.map(renderActivationRow).join("")}</tbody>
-        </table>
-      </div>
-    `;
-  renderPageShell(
-    "激活码管理",
-    body,
-    allowed
-      ? `<button class="btn primary" data-act="new-activation">新激活码</button><button class="btn" data-act="grant-points">发送激活码红包</button><button class="btn" data-act="bulk-grant-points">一键发放积分</button>`
-      : "",
-  );
+        <div class="settings-toolbar">
+          <button class="btn primary" data-act="new-activation">新激活码</button>
+          <button class="btn" data-act="grant-points">发送激活码红包</button>
+          <button class="btn" data-act="bulk-grant-points">一键发放积分</button>
+        </div>
+        ${activationModalError ? `<div class="form-error">${escapeHtml(activationModalError)}</div>` : ""}
+        <div class="user-table-wrap">
+          <table class="user-table activation-management-table">
+            <thead><tr><th>激活码</th><th>类型/策略</th><th>次数</th><th>滚动周期</th><th>失效时间</th><th>积分</th><th>头衔</th><th>昵称颜色</th><th>专属房间号</th><th>管理员</th><th>高级用户</th><th>高级 AI</th><th class="management-permission-column">权限</th><th>自定义模式额度</th><th>已使用</th><th>操作</th></tr></thead>
+            <tbody>${activationCodes.map(renderActivationRow).join("")}</tbody>
+          </table>
+        </div>
+      `;
+  return `
+    <div class="modal-backdrop" data-backdrop-dismiss>
+      <section class="modal panel activation-dialog" role="dialog" aria-modal="true" aria-labelledby="activationTitle">
+        <div class="modal-head"><h2 id="activationTitle">激活码管理</h2><button class="btn ghost" data-act="modal-close">关闭</button></div>
+        ${body}
+      </section>
+    </div>
+  `;
 }
 
 function renderActivationRow(code: ActivationCode): string {
@@ -2496,7 +2616,11 @@ function renderTicketsPane(): string {
   `;
 }
 
-function renderLeaderboardPage(): void {
+/**
+ * 排行榜弹窗。原 renderLeaderboardPage() 的整块内容原样搬过来，只去掉 renderPageShell
+ * 那层页面骨架，改为返回可直接塞进弹窗的 HTML（数据获取仍在 loadLeaderboard 里，未改动）。
+ */
+function renderLeaderboardModal(): string {
   const currentOutsideList = Boolean(
     leaderboard?.current && !leaderboard.entries.some((entry) => entry.id === leaderboard!.current!.id),
   );
@@ -2529,7 +2653,16 @@ function renderLeaderboardPage(): void {
       : ""
     }
     `;
-  renderPageShell("排行榜", body);
+  // 弹窗结构与 renderSettingsModal 一致：.modal-backdrop > section.modal，因此同样吃到
+  // #app.modal-entering 的果冻回弹入场动画（见 styles.css）。
+  return `
+    <div class="modal-backdrop" data-backdrop-dismiss>
+      <section class="modal panel leaderboard-dialog" role="dialog" aria-modal="true" aria-labelledby="leaderboardTitle">
+        <div class="modal-head"><h2 id="leaderboardTitle">排行榜</h2><button class="btn ghost" data-act="modal-close">关闭</button></div>
+        ${body}
+      </section>
+    </div>
+  `;
 }
 
 function renderLeaderboardRow(entry: LeaderboardEntry, current: boolean): string {
@@ -2583,6 +2716,7 @@ function renderTicketRow(request: UserRequestView, admin: boolean): string {
 function renderDialog(): string {
   if (!dialog) return "";
   if (dialog.kind === "edit-user") return renderEditUserDialog(dialog);
+  if (dialog.kind === "profile-edit") return renderProfileDialog(dialog);
   if (dialog.kind === "disable-user") return renderDisableUserDialog(dialog);
   if (dialog.kind === "delete-user") return renderDeleteUserDialog(dialog);
   if (dialog.kind === "edit-invite") return renderEditInviteDialog(dialog);
@@ -2626,11 +2760,17 @@ function renderReservedRoomCodesDialog(state: Extract<DialogState, { kind: "rese
   const codes = sortReservedRoomCodes(state.codes ?? reservedRoomCodesByUser.get(target.id) ?? target.reservedRoomCodes ?? []);
   const access = reservedRoomCodeAccess(target);
   const editing = state.editingCode;
+  // 个人中心的入口也是这个弹窗（userId 就是自己），所以自己看自己时换一句说明：号码由激活码/邀请码发放，
+  // 普通用户只能删不能加（access.canAdd 只有超级管理员为真）。
+  const isSelf = currentUser?.id === target.id;
+  const selfNote = access.canAdd
+    ? " · 你可以直接新增、修改或删除"
+    : " · 号码由激活码或邀请码发放，这里只能删除；删除后该号码会被回收";
   return `
     <div class="modal-backdrop">
       <section class="modal panel reserved-codes-dialog">
         <div class="modal-head"><h2>专属房间号</h2><button class="btn ghost" data-act="dialog-close">关闭</button></div>
-        <p class="dialog-subtitle">${escapeHtml(target.nickname)} / @${escapeHtml(target.username)}${!access.canAdd && access.canDelete ? " · 你可以删除允许范围内的专属房间号" : ""}</p>
+        <p class="dialog-subtitle">${escapeHtml(target.nickname)} / @${escapeHtml(target.username)}${isSelf ? selfNote : !access.canAdd && access.canDelete ? " · 你可以删除允许范围内的专属房间号" : ""}</p>
         ${state.error ? `<div class="form-error">${escapeHtml(state.error)}</div>` : ""}
         <div class="reserved-code-list">
           ${codes.length ? codes.map((code) => `<div class="reserved-code-item"><strong>${escapeHtml(code)}</strong>${access.canEdit && editing === code ? `<input id="reservedRoomCodeEdit" inputmode="numeric" value="${escapeAttr(code)}" aria-label="编辑专属房间号" />` : ""}<div class="reserved-code-actions">${access.canEdit ? `<button class="btn ghost" data-act="edit-reserved-room-code" data-code="${escapeAttr(code)}">${editing === code ? "取消编辑" : "编辑"}</button>${editing === code ? `<button class="btn primary" data-act="save-reserved-room-code" data-code="${escapeAttr(code)}">保存</button>` : ""}` : ""}${access.canDelete ? `<button class="btn ghost danger" data-act="delete-reserved-room-code" data-code="${escapeAttr(code)}">删除</button>` : ""}</div></div>`).join("") : `<p class="muted">暂无专属房间号。</p>`}
@@ -2641,7 +2781,9 @@ function renderReservedRoomCodesDialog(state: Extract<DialogState, { kind: "rese
 }
 
 function renderWinMusicDialog(state: Extract<DialogState, { kind: "win-music" }>): string {
-  const user = managedUsers.find((item) => item.id === state.userId);
+  // 个人中心的入口带的是 currentUser.id，而普通用户不会去拉 /api/users，managedUsers 里未必有自己，
+  // 所以退回到 currentUser（和 renderReservedRoomCodesDialog 一样的兜底）。
+  const user = managedUsers.find((item) => item.id === state.userId) ?? (currentUser?.id === state.userId ? currentUser : undefined);
   if (!user) return "";
   const access = winMusicControlAccess(user, currentUser);
   const uploaded = user.hasWinMusic;
@@ -2677,6 +2819,14 @@ function renderLogoutDialog(): string {
   `;
 }
 
+/**
+ * 「编辑用户」弹窗（设置 → 用户管理 → 某一行的「编辑」）。这是管理员工具，只管别人的管理属性：
+ * 昵称颜色 / 积分 / 最高征税比例 / 头衔 / 高级 AI / 用户权限 / 自定义模式额度 / 禁止自改昵称 / 身份。
+ *
+ * 昵称、用户名、新密码这三个「个人资料」字段刻意不在这里出现（它们只在 renderProfileDialog 里）：
+ * 两个弹窗字段集不重叠，管理员从这个弹窗保存时不可能改到别人的昵称或密码。
+ * 保存共用 saveUserFromDialog，它按「元素在不在」取字段，不存在的字段不会进 patch。
+ */
 function renderEditUserDialog(state: Extract<DialogState, { kind: "edit-user" }>): string {
   const user = managedUsers.find((item) => item.id === state.userId);
   if (!user) return "";
@@ -2689,10 +2839,8 @@ function renderEditUserDialog(state: Extract<DialogState, { kind: "edit-user" }>
       <section class="modal panel edit-dialog">
         <div class="modal-head"><h2>编辑用户</h2><button class="btn ghost" data-act="dialog-close">关闭</button></div>
         ${state.error ? `<div class="form-error">${escapeHtml(state.error)}</div>` : ""}
+        <p class="muted">正在编辑：<strong style="color:${escapeAttr(user.nicknameColor)}">${escapeHtml(user.nickname)}</strong> <span class="username-text">@${escapeHtml(user.username)}</span></p>
         <div class="setup-grid modal-grid">
-          <div class="field"><label>昵称</label><input id="editNickname" maxlength="24" value="${escapeAttr(user.nickname)}" ${isSelf || canSuperManage || canAdminManage ? "" : "disabled"} /></div>
-          <div class="field"><label>用户名</label><input value="@${escapeAttr(user.username)}" disabled /></div>
-          <div class="field"><label>新密码</label><input id="editPassword" type="password" maxlength="72" ${isSelf || canSuperManage ? "" : "disabled"} /></div>
           <div class="field"><label>昵称颜色</label><input id="editNicknameColor" maxlength="7" value="${escapeAttr(user.nicknameColor)}" ${self?.superAdmin ? "" : "disabled"} /></div>
           <div class="field"><label>积分</label><input id="editPoints" type="number" step="1" value="${user.points}" ${self?.superAdmin ? "" : "disabled"} /></div>
           ${self?.superAdmin ? renderEditTaxRateFields(user) : ""}
@@ -2716,6 +2864,34 @@ function renderEditUserDialog(state: Extract<DialogState, { kind: "edit-user" }>
       : ""
     }
           ${renderEditRoleFields(user, canSuperManage, canAdminManage)}
+        </div>
+        <div class="top-actions"><button class="btn primary" data-act="submit-user-edit" data-user-id="${escapeAttr(user.id)}">保存</button></div>
+      </section>
+    </div>
+  `;
+}
+
+/**
+ * 「编辑个人资料」弹窗（个人中心 → 编辑个人资料）。只放账号本人有权改的字段：昵称 + 新密码。
+ * 昵称颜色 / 头衔 / 积分 / 身份都是超级管理员权限（服务端 updateUser 里有必须 superAdmin 的检查），
+ * 硬塞进来只会让普通用户点了保存被服务端打回，所以不放。
+ * 保存刻意复用 saveUserFromDialog：字段 id（editNickname / editPassword）和它读的一致，
+ * data-act 也用同一个 submit-user-edit，因此不需要第二条保存路径，密码确认那一步也照旧。
+ * 字段集和「编辑用户」（renderEditUserDialog）严格不重叠：昵称 / 用户名 / 新密码只在这里，
+ * 管理属性（颜色、积分、税率、头衔、AI、权限、额度、身份）只在那边。
+ */
+function renderProfileDialog(state: Extract<DialogState, { kind: "profile-edit" }>): string {
+  const user = currentUser;
+  if (!user) return "";
+  return `
+    <div class="modal-backdrop">
+      <section class="modal panel edit-dialog">
+        <div class="modal-head"><h2>编辑个人资料</h2><button class="btn ghost" data-act="dialog-close">关闭</button></div>
+        ${state.error ? `<div class="form-error">${escapeHtml(state.error)}</div>` : ""}
+        <div class="setup-grid modal-grid">
+          <div class="field"><label>昵称</label><input id="editNickname" maxlength="24" value="${escapeAttr(user.nickname)}" ${user.nicknameChangeDisabled ? "disabled" : ""} />${user.nicknameChangeDisabled ? `<small>该账号已被禁止自行修改昵称，请提交昵称修改工单。</small>` : ""}</div>
+          <div class="field"><label>用户名</label><input value="@${escapeAttr(user.username)}" disabled /><small>用户名不可修改。</small></div>
+          <div class="field wide"><label>新密码</label><input id="editPassword" type="password" maxlength="72" placeholder="留空则不修改" /><small>保存时需要验证当前密码（下一步会弹出确认框）。</small></div>
         </div>
         <div class="top-actions"><button class="btn primary" data-act="submit-user-edit" data-user-id="${escapeAttr(user.id)}">保存</button></div>
       </section>
@@ -4896,9 +5072,13 @@ async function handleAct(action: string, el?: HTMLElement): Promise<void> {
     accountMenuOpen = false;
     await openLeaderboard();
   }
-  if (action === "go-home") {
-    history.pushState({}, "", "/");
-    dialog = null;
+  if (action === "open-profile") {
+    accountMenuOpen = false;
+    modal = { kind: "profile" };
+    render();
+  }
+  if (action === "edit-profile") {
+    dialog = { kind: "profile-edit" };
     render();
   }
   if (action === "go-invite") {
@@ -6403,7 +6583,9 @@ async function submitBulkGrantPoints(): Promise<void> {
     dialog = null;
     toast("积分已发放");
     await loadUsersPage();
-    if (location.pathname === "/activation") await loadActivationPage();
+    // 弹窗版激活码管理里也能发积分（工具条上的「一键发放积分」），发完顺手把它的列表刷新一下。
+    // 判据从「地址是不是 /activation」换成「当前开着的是不是激活码弹窗」——/activation 路由已经没了。
+    if (modal?.kind === "activation") await loadActivationCodes();
   } catch (error) {
     setDialogError(error instanceof Error ? error.message : "发放失败");
     render();
@@ -7504,9 +7686,11 @@ async function refreshAuth(): Promise<void> {
     render();
     return;
   }
-  if (currentUser && location.pathname === "/invite") await loadInvitePage();
-  else if (currentUser && location.pathname === "/activation") await loadActivationPage();
-  else if (currentUser && location.pathname === "/leaderboard") await loadLeaderboard();
+  // /invite 与 /activation 已经是弹窗：老书签 / 历史记录停在这两个地址时，按原语义把弹窗开出来
+  // （open*Management 会顺带把地址 replaceState 回主界面），和下面 /leaderboard 那行一个路子。
+  if (currentUser && location.pathname === "/invite") await openInviteManagement();
+  else if (currentUser && location.pathname === "/activation") await openActivationManagement();
+  else if (currentUser && location.pathname === "/leaderboard") await openLeaderboard();
   else {
     render();
     await joinRoomFromLocation();
@@ -7540,15 +7724,15 @@ async function submitAuth(): Promise<void> {
     await refreshRequestNotifications();
     modal = null;
     if (location.pathname === "/invite") {
-      await loadInvitePage();
+      await openInviteManagement();
       return;
     }
     if (location.pathname === "/activation") {
-      await loadActivationPage();
+      await openActivationManagement();
       return;
     }
     if (location.pathname === "/leaderboard") {
-      await loadLeaderboard();
+      await openLeaderboard();
       return;
     }
     render();
@@ -7589,8 +7773,12 @@ async function openLeaderboard(): Promise<void> {
     render();
     return;
   }
-  if (location.pathname !== "/leaderboard") history.pushState({}, "", "/leaderboard");
-  modal = null;
+  // 排行榜改成弹窗后不再占一个路由。老书签 / 浏览器历史停在 /leaderboard 时，把地址收回主界面：
+  // 用 replaceState 而不是 pushState —— push 会让「后退」再退回到 /leaderboard，形成来回跳。
+  if (location.pathname === "/leaderboard") history.replaceState({}, "", "/");
+  modal = { kind: "leaderboard" };
+  // loadLeaderboard 末尾会 render() 一次，所以这里刻意不先 render：只渲染一次，
+  // #app.modal-entering 才不会被第二次渲染清掉（否则果冻回弹动画等于没播）。
   await loadLeaderboard();
 }
 
@@ -7648,45 +7836,53 @@ async function openInviteManagement(): Promise<void> {
     render();
     return;
   }
-  if (location.pathname !== "/invite") history.pushState({}, "", "/invite");
-  // renderPageShell 里会调用 renderModal()，不先清空 modal 的话设置弹窗会盖在邀请码页上。
-  modal = null;
-  await loadInvitePage();
+  // 邀请码改成弹窗后不再占一个路由（原来这里 pushState 到 /invite，再由 render() 开头的短路分支
+  // 走页面骨架）。老书签 / 浏览器历史停在 /invite 时把地址收回主界面：用 replaceState 而不是
+  // pushState —— push 会让「后退」再退回到 /invite，形成来回跳。和 openLeaderboard 是同一套做法。
+  if (location.pathname === "/invite") history.replaceState({}, "", "/");
+  modal = { kind: "invite" };
+  // loadInvitations 末尾会 render() 一次，所以这里刻意不先 render：只渲染一次，
+  // #app.modal-entering 才不会被第二次渲染清掉（否则果冻回弹动画等于没播）。
+  await loadInvitations();
 }
 
-async function loadInvitePage(): Promise<void> {
+async function loadInvitations(): Promise<void> {
   try {
     const data = await httpGet("/api/invitations");
     invitations = data.invitations ?? [];
-    invitePageError = "";
+    inviteModalError = "";
   } catch (error) {
     invitations = [];
-    invitePageError = error instanceof Error ? error.message : "加载失败";
+    inviteModalError = error instanceof Error ? error.message : "加载失败";
   }
   render();
 }
 
 async function openActivationManagement(): Promise<void> {
+  // 同 openInviteManagement：不再 pushState，老书签先把地址收回主界面。
+  if (location.pathname === "/activation") history.replaceState({}, "", "/");
   if (!currentUser?.superAdmin) {
     toast("只有超级管理员可以访问激活码管理");
+    // 这里原来直接 return：从「用户管理」工具条点进来时设置弹窗还开着，不渲染也无所谓。
+    // 但 /activation 深链也会走到这，不渲染会留下一片空白（旧代码靠 loadActivationCodes 末尾的 render 兜底）。
+    render();
     return;
   }
-  history.pushState({}, "", "/activation");
-  modal = null;
-  await loadActivationPage();
+  modal = { kind: "activation" };
+  await loadActivationCodes();
 }
 
-async function loadActivationPage(): Promise<void> {
+async function loadActivationCodes(): Promise<void> {
   try {
     const [data, userData] = await Promise.all([httpGet("/api/activations"), httpGet("/api/users").catch(() => undefined)]);
     activationCodes = data.activations ?? [];
     activationRegisteredUserCount = Number(data.registeredUserCount ?? 0);
-    activationPageError = "";
+    activationModalError = "";
     if (userData?.users) managedUsers = userData.users;
   } catch (error) {
     activationCodes = [];
     activationRegisteredUserCount = 0;
-    activationPageError = error instanceof Error ? error.message : "加载失败";
+    activationModalError = error instanceof Error ? error.message : "加载失败";
   }
   render();
 }
@@ -7868,11 +8064,18 @@ async function saveTaxSettingsFromDialog(): Promise<void> {
 
 async function saveUserFromDialog(userId: string): Promise<void> {
   if (!userId) return;
-  const original = managedUsers.find((user) => user.id === userId);
+  // 个人中心改自己的资料时 managedUsers 可能还是空的（普通用户看不到「用户管理」页签，不会去拉 /api/users），
+  // 所以退回到 currentUser——它本来就带着同样的字段。
+  const original = managedUsers.find((user) => user.id === userId) ?? (currentUser?.id === userId ? currentUser : undefined);
   if (!original) return;
   const patch: Record<string, unknown> = {};
-  const nickname = inputValue("editNickname");
-  const password = inputValue("editPassword");
+  // 「编辑用户」（管理员，renderEditUserDialog）和「编辑个人资料」（本人，renderProfileDialog）
+  // 共用这一条保存路径，两个弹窗的字段集刻意不重叠。昵称 / 新密码只存在于个人资料弹窗里，
+  // 所以这里用「元素在不在」来决定写不写：拿不到元素就跳过，管理员从「编辑用户」保存时
+  // patch 里永远不会出现 nickname / password（改不动别人的昵称和密码），普通用户从
+  // 「编辑个人资料」保存时也不会出现积分 / 权限 / 身份这些超管字段。
+  const nickname = (document.getElementById("editNickname") as HTMLInputElement | null)?.value;
+  const password = (document.getElementById("editPassword") as HTMLInputElement | null)?.value;
   const title = inputValue("editTitle");
   const nicknameColor = inputValue("editNicknameColor");
   const points = inputValue("editPoints");
@@ -8154,7 +8357,7 @@ async function saveInviteFromDialog(existingCode?: string): Promise<void> {
     };
     await httpPost("/api/invitations", invitation);
     dialog = null;
-    await loadInvitePage();
+    await loadInvitations();
   } catch (error) {
     setDialogError(error instanceof Error ? error.message : "邀请码保存失败");
     render();
@@ -8213,7 +8416,7 @@ async function saveActivationFromDialog(existingCode?: string): Promise<void> {
     };
     await httpPost("/api/activations", activation);
     dialog = null;
-    await loadActivationPage();
+    await loadActivationCodes();
   } catch (error) {
     setDialogError(error instanceof Error ? error.message : "激活码保存失败");
     render();
@@ -8250,7 +8453,8 @@ async function savePointDistributionFromDialog(existingCode?: string): Promise<v
     });
     dialog = null;
     toast("激活码红包已保存");
-    if (location.pathname === "/activation") await loadActivationPage();
+    // 同上：激活码管理已经是弹窗，判据换成「当前开着的是不是激活码弹窗」。
+    if (modal?.kind === "activation") await loadActivationCodes();
     else render();
   } catch (error) {
     setDialogError(error instanceof Error ? error.message : "激活码红包保存失败");
@@ -8324,8 +8528,8 @@ async function deleteManagedCode(kind: "invite" | "activation", code: string): P
   try {
     await httpDelete(`/api/${kind === "invite" ? "invitations" : "activations"}/${encodeURIComponent(code)}`);
     dialog = null;
-    if (kind === "invite") await loadInvitePage();
-    else await loadActivationPage();
+    if (kind === "invite") await loadInvitations();
+    else await loadActivationCodes();
   } catch (error) {
     setDialogError(error instanceof Error ? error.message : "删除失败");
     render();

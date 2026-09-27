@@ -1571,12 +1571,16 @@ button:disabled {
 }
 /* 弹窗入场：从下方略小状态快速上移到中央，落定时用果冻回弹（横向收缩 / 纵向拉伸的阻尼震荡），
    幅度逐次衰减后完全静止。全程没有任何横向位移，结束时 transform 回到 identity。
-   只在弹窗「新出现」的那一次渲染播放：#app.modal-entering 由 app.ts 的 render() 门控，
-   因为整块 innerHTML 会重建 DOM，不门控的话任何重渲染都会让动画重放一次。 */
-#app.modal-entering .modal-backdrop {
+   只在「新的一层浮层出现」的那一次渲染播放：#app.modal-entering 由 app.ts 的 render() 门控
+   （比对浮层身份签名），因为整块 innerHTML 会重建 DOM，不门控的话任何重渲染都会让动画重放一次。
+   :last-child 是刻意的——浮层可以叠（设置弹窗上叠权限 / 编辑用户，编辑用户上再叠确认密码），
+   只有最上面那层是新打开的，底下那几层是重渲染出来的：让它们跟着一起淡入 + 回弹会像在抖。
+   浮层全部由 render() 末尾按 modal → dialog → 密码确认 → 开局换牌 → 终局 的顺序输出，
+   是 .shell 的最后几个子元素，所以最上面那层就是 :last-child（后面不会再追加元素）。 */
+#app.modal-entering .modal-backdrop:last-child {
   animation:modal-backdrop-in .28s ease-out;
 }
-#app.modal-entering .modal-backdrop>.modal {
+#app.modal-entering .modal-backdrop:last-child>.modal {
   animation:modal-jelly-in .38s;
 }
 @keyframes modal-backdrop-in {
@@ -1678,6 +1682,72 @@ button:disabled {
 .settings-dialog {
   width:min(1180px,100%);
   max-height:min(880px,100dvh - 36px);
+}
+/* 排行榜弹窗：表格本身有 720px 最小宽度（.leaderboard-table），沿用和设置弹窗一样的宽度，
+   否则默认的 .modal 640px 会一直横向滚动。 */
+.leaderboard-dialog {
+  width:min(1180px,100%);
+  max-height:min(880px,100dvh - 36px);
+}
+/* 个人中心弹窗：一列功能入口，比设置弹窗窄——里面没有宽表格。 */
+.profile-dialog {
+  width:min(560px,100%);
+}
+/* 邀请码 / 激活码弹窗：原来是各占一整页（renderPageShell 那套页面骨架），搬进弹窗后沿用设置弹窗
+   这一档宽度——两边的表格都是 16 列，用默认的 .modal 640px 会一直横向滚动；里面的
+   .user-table-wrap 自带 overflow-x:auto，列多时横向滚动而不是把弹窗撑破。 */
+.invite-dialog,.activation-dialog {
+  width:min(1180px,100%);
+  max-height:min(880px,100dvh - 36px);
+}
+.profile-head {
+  background:#fffdf8;
+  border:1px solid #20242a1a;
+  border-radius:10px;
+  gap:4px;
+  margin-bottom:12px;
+  padding:12px 14px;
+  display:grid;
+}
+.profile-nickname {
+  font-size:17px;
+  line-height:1.2;
+}
+.profile-meta {
+  color:#58616a;
+  font-size:12px;
+}
+.profile-entries {
+  gap:8px;
+  display:grid;
+}
+.profile-entry {
+  text-align:left;
+  white-space:normal;
+  align-items:start;
+  gap:2px;
+  height:auto;
+  padding:10px 14px;
+  display:grid;
+}
+.profile-entry-name {
+  font-weight:700;
+}
+.profile-entry-note {
+  color:#58616a;
+  font-size:12px;
+  font-weight:400;
+  line-height:1.35;
+}
+/* 置灰的入口（没有对应权限）保留可读性，让人看得清「需要兑换解锁」这句提示。 */
+.profile-entry:disabled {
+  opacity:.55;
+  cursor:not-allowed;
+}
+.profile-footnote {
+  margin:12px 0 0;
+  font-size:12px;
+  line-height:1.45;
 }
 .settings-tabs {
   border-bottom:1px solid #20242a1a;
