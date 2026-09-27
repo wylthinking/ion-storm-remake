@@ -671,10 +671,14 @@ type SettingsModal = { kind: "settings" };
 type LeaderboardModal = { kind: "leaderboard" };
 /** 个人中心弹窗：点用户名 → 下拉菜单 →「个人中心」。这里放账号自己的功能，管理员后台（设置 → 用户管理）只管别人。 */
 type ProfileModal = { kind: "profile" };
-/** 邀请码管理弹窗。原来是占一个路由的独立页面（renderInvitePage + renderPageShell + /invite），现在和排行榜一样改成弹窗。 */
-type InviteModal = { kind: "invite" };
-/** 激活码管理弹窗。原来是独立页面（renderActivationPage + /activation），和邀请码一起改成弹窗。 */
-type ActivationModal = { kind: "activation" };
+/**
+ * 邀请码管理弹窗。原来是占一个路由的独立页面（renderInvitePage + renderPageShell + /invite），现在和排行榜一样改成弹窗。
+ * fromSettings：从「设置 → 用户管理」工具条点进来时为 true——它是覆盖掉设置弹窗打开的，关闭时得自己记住来路，
+ * 退回设置弹窗而不是一路退到主界面（和 CreditsModal 同一套做法）。
+ */
+type InviteModal = { kind: "invite"; fromSettings?: boolean };
+/** 激活码管理弹窗。原来是独立页面（renderActivationPage + /activation），和邀请码一起改成弹窗；fromSettings 同 InviteModal。 */
+type ActivationModal = { kind: "activation"; fromSettings?: boolean };
 type SettingsTab = "general" | "users" | "tickets";
 type ModalState = SetupModal | JoinModal | AuthModal | ActionChoiceModal | CreditsModal | LuckyModal | SettingsModal | LeaderboardModal | ProfileModal | InviteModal | ActivationModal | null;
 type InvitationCode = {
@@ -929,6 +933,14 @@ let ticketPageError = "";
 let leaderboard: LeaderboardResult | undefined;
 let leaderboardError = "";
 let passwordConfirm: { action: ProtectedAction; error?: string } | null = null;
+/**
+ * 浮层层级计数 = 本次渲染真正输出到页面上的浮层数（modal / dialog / 确认密码 / 开局换牌 / 终局 五层）。
+ * 入场动画只在「层级比上一次渲染更高」时播，所以关掉子弹窗、父弹窗重新露出来时不会重播。
+ * 每次 render() 按实际输出的层数重算，而不是在各处 open/close 手动 modalDepth++ / --：
+ * 全项目有一百多处 `modal = …` / `dialog = …` / `passwordConfirm = …` 赋值（开启、关闭、改字段），
+ * 手动记账漏一处计数就漂了，以后新加的弹窗也必然漏。重算出来的值与手动记账完全等价，且不会漂。
+ */
+let modalDepth = 0;
 let accountMenuOpen = false;
 // 设置弹窗的当前页签。原来的「用户管理」「工单管理」独立页面已并入设置弹窗，靠这个变量切换内容。
 let currentSettingsTab: SettingsTab = "general";
@@ -1003,6 +1015,96 @@ function moveToRoomUrl(code: string, replace = false): void {
   history[replace ? "replaceState" : "pushState"]({}, "", target);
 }
 
+/**
+ * 浮层的历史记录：每开一层浮层就往历史里压一条「地址和当前完全一样」的记录——地址栏不会变，
+ * 但返回键能一层层往回关（编辑邀请码 → 邀请码管理 → 主界面），而不是直接离开页面。
+ * 手动关掉浮层后把多出来的记录回退掉，免得返回键要按好几次才有反应。
+ * 记录里带一个标记，用来判断「当前这条历史记录是不是我们压的」。
+ */
+const overlayHistoryFlag = "ionStormOverlay";
+let overlayHistoryDepth = 0;
+/** 我们自己发起的回退条数（退一条就少一条），回到 popstate 里只销账、不再关浮层。 */
+let overlayHistoryBackPending = 0;
+let overlayHistoryUnwindQueued = false;
+
+/** 需要几条浮层记录：只有能关掉的层才算（开局换牌 / 终局是游戏托管的全屏层，返回键不该关掉它们）。 */
+function overlayHistoryDesired(): number {
+  return (modal ? 1 : 0) + (dialog ? 1 : 0) + (passwordConfirm ? 1 : 0);
+}
+
+function atOverlayHistoryEntry(): boolean {
+  return (history.state as Record<string, unknown> | null)?.[overlayHistoryFlag] === true;
+}
+
+/** 让历史记录条数跟上当前浮层层数（开一层压一条；关掉后多出来的回退掉）。 */
+function syncOverlayHistory(): void {
+  while (overlayHistoryDepth < overlayHistoryDesired()) {
+    try {
+      history.pushState({ [overlayHistoryFlag]: true }, "", location.href);
+    } catch {
+      // 个别浏览器会限制 pushState 的频率（Safari）：拿不到记录就当没有这个功能，
+      // 不能让异常把整次渲染带崩。
+      return;
+    }
+    overlayHistoryDepth += 1;
+  }
+  if (overlayHistoryDepth > overlayHistoryDesired() && !overlayHistoryUnwindQueued) {
+    overlayHistoryUnwindQueued = true;
+    // 等这一轮同步代码跑完再回退：同一轮里可能紧跟着 pushState 跳到 /room/xxx（加入房间成功）
+    // 或退出登录回主界面，那种情况下 back() 会把刚做完的那次跳转顶掉。
+    setTimeout(flushOverlayHistoryUnwind, 0);
+  }
+}
+
+/**
+ * 回退一条浮层记录。一次只退一条：退到上一条之后才知道那条是不是我们压的
+ * （中间可能夹着 /room/xxx 这类正常跳转产生的记录，退过去会把 URL 带偏）。
+ */
+function popOneOverlayHistoryEntry(): void {
+  if (overlayHistoryDepth <= overlayHistoryDesired()) return;
+  if (!atOverlayHistoryEntry()) return;
+  overlayHistoryDepth -= 1;
+  overlayHistoryBackPending += 1;
+  history.back();
+}
+
+function flushOverlayHistoryUnwind(): void {
+  overlayHistoryUnwindQueued = false;
+  popOneOverlayHistoryEntry();
+}
+
+/**
+ * 关掉当前弹窗时该退到哪一级。
+ * 「设置」里开出来的几屏（项目信息、邀请码管理、激活码管理）都是覆盖掉设置弹窗打开的（不是叠层），
+ * 所以关闭时必须按 fromSettings 退回设置弹窗——否则会一路退到主界面，等于把用户踹出后台。
+ * 深链（/invite、/activation）和从别处打开的没有这个标记，照旧关到主界面。
+ */
+function parentModalAfterClose(): ModalState {
+  if (!modal) return null;
+  if (modal.kind === "credits") return modal.fromSettings ? { kind: "settings" } : null;
+  if (modal.kind === "invite" || modal.kind === "activation") return modal.fromSettings ? { kind: "settings" } : null;
+  return null;
+}
+
+/** 返回键：关掉最上面那一层浮层。没有可关的浮层时返回 false，交给房间深链那套逻辑。 */
+function closeTopOverlay(): boolean {
+  if (passwordConfirm) {
+    passwordConfirm = null;
+    return true;
+  }
+  if (dialog) {
+    dialog = null;
+    return true;
+  }
+  if (!modal) return false;
+  // 托管的强制选择必须走弹窗里的按钮，返回键不能绕过去——和「点遮罩关闭」同一套规则。
+  if (modal.kind === "actions" && modal.forced) return false;
+  // 登录/注册弹窗和点遮罩一个待遇：记下「游客继续」，免得下次刷新又弹出来。
+  if (modal.kind === "auth") localStorage.setItem("ionStormGuestOk", "1");
+  modal = parentModalAfterClose();
+  return true;
+}
+
 /** Joins deep links only after auth is known, so anonymous visitors never enter a room as guests. */
 async function joinRoomFromLocation(): Promise<void> {
   const code = roomCodeFromLocation();
@@ -1021,6 +1123,21 @@ applyThemeColor(themeColor, false);
 render();
 void refreshAuth();
 window.addEventListener("popstate", () => {
+  // 我们自己为了收掉多余记录而发起的回退：浮层状态在关的时候就已经改好并渲染过了，
+  // 这里只销账，顺便看看还有没有多余的记录要退。
+  if (overlayHistoryBackPending > 0) {
+    overlayHistoryBackPending -= 1;
+    popOneOverlayHistoryEntry();
+    return;
+  }
+  // 返回键关掉最上面那一层浮层（编辑邀请码 → 邀请码管理 → …），地址栏不变。
+  if (overlayHistoryDepth > 0) {
+    overlayHistoryDepth -= 1;
+    if (closeTopOverlay()) {
+      render();
+      return;
+    }
+  }
   // 历史记录里可能还留着旧的 /user、/ticket（升级前留下的），一并归位，避免停在无页面的地址上。
   if (location.pathname === "/user" || location.pathname === "/ticket") history.replaceState({}, "", "/");
   const requested = roomCodeFromLocation();
@@ -1513,25 +1630,19 @@ function render(): void {
       ${winLayer}
     </div>
   `;
-  // 弹窗入场动画只在「新的一层浮层出现」的那一次渲染播放，之后的重渲染不重放。
-  // 门控状态存在 #app 自身（与 dataset.renderScope 同一套做法），不新增模块级变量。
-  // 这里存的是当前浮层的「身份签名」（哪一层 + 是什么弹窗），而不是「有没有弹窗」：
-  // 只记有没有的话，「设置 → 权限」「邀请码 → 编辑邀请码」「设置 → 编辑用户 → 确认密码」这类
-  // 弹窗换弹窗 / 弹窗叠弹窗的路径上，新弹窗出现时门控里记的还是上一层，拿不到 modal-entering，
-  // 果冻回弹等于没播。改成比签名后：身份一变（就是开了新弹窗）就重播，而同一个弹窗因为输入、
-  // 报错、计时等原因重渲染时签名不变，仍然不会重播——「同一弹窗不重复播放」这条语义保住了。
+  // 弹窗入场动画只在「浮层层级比上一次渲染更高」的那一次渲染播放，之后的重渲染不重放。
+  // 层级 = 这次真正输出到页面上的浮层数（modal / dialog / 确认密码 / 开局换牌 / 终局，见 modalDepth）。
+  // 用「更高」而不是「不相等」：关掉子弹窗时层级要降一级，用不等号会让下面那层父弹窗把入场动画
+  // 又重播一遍——那正是这次要修的「动画重复播放」。关子弹窗、父弹窗还在时层级没升高，不重播。
   // 注意：styles.css 那边用 .modal-backdrop:last-child 把动画限定在最上面那一层，
   // 所以下面这五层的输出顺序就是「谁是最后一层」的唯一依据，不能随意调换。
-  const overlaySignature = [
-    modalLayer ? `modal:${modal?.kind ?? ""}` : "",
-    dialogLayer ? `dialog:${dialog?.kind ?? ""}` : "",
-    passwordLayer ? "confirm-password" : "",
-    exchangeLayer ? "opening-exchange" : "",
-    winLayer ? "win" : "",
-  ].join("+");
+  modalDepth = (modalLayer ? 1 : 0) + (dialogLayer ? 1 : 0) + (passwordLayer ? 1 : 0) + (exchangeLayer ? 1 : 0) + (winLayer ? 1 : 0);
+  const lastRenderedDepth = Number(app.dataset.lastRenderedDepth || 0);
   const hasModalBackdrop = app.querySelector(".modal-backdrop") !== null;
-  app.classList.toggle("modal-entering", hasModalBackdrop && app.dataset.modalOverlay !== overlaySignature);
-  app.dataset.modalOverlay = hasModalBackdrop ? overlaySignature : "";
+  app.classList.toggle("modal-entering", hasModalBackdrop && modalDepth > lastRenderedDepth);
+  app.dataset.lastRenderedDepth = String(modalDepth);
+  // 浮层记录跟上当前层级：多一层压一条（返回键就能一层层关），少一层退一条。
+  syncOverlayHistory();
   if (startScreen) ensureStartScreenBackground();
   scheduleLocalOpeningExchange();
   bind();
@@ -4384,7 +4495,8 @@ function bind(): void {
         return;
       }
       if (modal) {
-        modal = null;
+        // 点遮罩关闭和弹窗里的「关闭」按钮走同一套退路：设置里开出来的几屏退回设置弹窗。
+        modal = parentModalAfterClose();
         render();
       }
     });
@@ -5382,7 +5494,8 @@ async function handleAct(action: string, el?: HTMLElement): Promise<void> {
   }
   if (action === "modal-close") {
     if (modal?.kind === "actions" && modal.forced) return;
-    modal = modal?.kind === "credits" && modal.fromSettings ? { kind: "settings" } : null;
+    // 邀请码/激活码/项目信息是从设置弹窗里开出来的，关闭时退回设置弹窗（见 parentModalAfterClose）。
+    modal = parentModalAfterClose();
     render();
   }
   if (action === "modal-submit") {
@@ -7840,7 +7953,9 @@ async function openInviteManagement(): Promise<void> {
   // 走页面骨架）。老书签 / 浏览器历史停在 /invite 时把地址收回主界面：用 replaceState 而不是
   // pushState —— push 会让「后退」再退回到 /invite，形成来回跳。和 openLeaderboard 是同一套做法。
   if (location.pathname === "/invite") history.replaceState({}, "", "/");
-  modal = { kind: "invite" };
+  // 这一屏是覆盖掉「设置」弹窗打开的（入口在设置 → 用户管理的工具条里），所以记下来路：
+  // 关闭时退回设置弹窗，不然会一路退到主界面。深链 /invite 进来时 modal 不是设置弹窗，照旧退到主界面。
+  modal = { kind: "invite", fromSettings: modal?.kind === "settings" };
   // loadInvitations 末尾会 render() 一次，所以这里刻意不先 render：只渲染一次，
   // #app.modal-entering 才不会被第二次渲染清掉（否则果冻回弹动画等于没播）。
   await loadInvitations();
@@ -7868,7 +7983,8 @@ async function openActivationManagement(): Promise<void> {
     render();
     return;
   }
-  modal = { kind: "activation" };
+  // 和 openInviteManagement 一样：从「设置 → 用户管理」工具条进来的要记住来路，关闭时退回设置弹窗。
+  modal = { kind: "activation", fromSettings: modal?.kind === "settings" };
   await loadActivationCodes();
 }
 

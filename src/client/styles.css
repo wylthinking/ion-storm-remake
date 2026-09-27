@@ -1571,8 +1571,9 @@ button:disabled {
 }
 /* 弹窗入场：从下方略小状态快速上移到中央，落定时用果冻回弹（横向收缩 / 纵向拉伸的阻尼震荡），
    幅度逐次衰减后完全静止。全程没有任何横向位移，结束时 transform 回到 identity。
-   只在「新的一层浮层出现」的那一次渲染播放：#app.modal-entering 由 app.ts 的 render() 门控
-   （比对浮层身份签名），因为整块 innerHTML 会重建 DOM，不门控的话任何重渲染都会让动画重放一次。
+   只在「浮层层级比上一次渲染更高」的那一次渲染播放：#app.modal-entering 由 app.ts 的 render() 门控
+   （比对 modalDepth 与 #app.dataset.lastRenderedDepth），因为整块 innerHTML 会重建 DOM，不门控的话
+   任何重渲染都会让动画重放一次，关掉子弹窗也会让底下的父弹窗白白重播一遍。
    :last-child 是刻意的——浮层可以叠（设置弹窗上叠权限 / 编辑用户，编辑用户上再叠确认密码），
    只有最上面那层是新打开的，底下那几层是重渲染出来的：让它们跟着一起淡入 + 回弹会像在抖。
    浮层全部由 render() 末尾按 modal → dialog → 密码确认 → 开局换牌 → 终局 的顺序输出，
