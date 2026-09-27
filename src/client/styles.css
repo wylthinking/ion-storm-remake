@@ -1569,20 +1569,24 @@ button:disabled {
 .modal.rules-editor-dialog.rules-editor-table-page {
   width:min(1120px,96vw);
 }
-/* 弹窗入场：从下方略小状态快速上移到中央，落定时用果冻回弹（横向收缩 / 纵向拉伸的阻尼震荡），
-   幅度逐次衰减后完全静止。全程没有任何横向位移，结束时 transform 回到 identity。
+/* 弹窗入场：淡入 + 轻微上浮（15px），落定即静止——没有回弹 / 抖动，缩放全程不超过 1。
    只在「浮层层级比上一次渲染更高」的那一次渲染播放：#app.modal-entering 由 app.ts 的 render() 门控
    （比对 modalDepth 与 #app.dataset.lastRenderedDepth），因为整块 innerHTML 会重建 DOM，不门控的话
    任何重渲染都会让动画重放一次，关掉子弹窗也会让底下的父弹窗白白重播一遍。
    :last-child 是刻意的——浮层可以叠（设置弹窗上叠权限 / 编辑用户，编辑用户上再叠确认密码），
-   只有最上面那层是新打开的，底下那几层是重渲染出来的：让它们跟着一起淡入 + 回弹会像在抖。
+   只有最上面那层是新打开的，底下那几层是重渲染出来的：让它们跟着一起淡入 + 上浮会像在抖。
    浮层全部由 render() 末尾按 modal → dialog → 密码确认 → 开局换牌 → 终局 的顺序输出，
-   是 .shell 的最后几个子元素，所以最上面那层就是 :last-child（后面不会再追加元素）。 */
+   是 .shell 的最后几个子元素，所以最上面那层就是 :last-child（后面不会再追加元素）。
+   每个浮层都是「<div class="modal-backdrop"> 里直接放 <section class="modal panel …">」这一种结构
+   （设置 / 个人中心 / 幸运值 / 项目信息 / 登录 / 加入房间 / 房间设置 / 邀请码 / 激活码 / 排行榜 /
+   用户与工单的各个子弹窗 / 确认密码 / 开局换牌 / 终局），所以这两条选择器覆盖全部弹窗，没有例外。 */
 #app.modal-entering .modal-backdrop:last-child {
-  animation:modal-backdrop-in .28s ease-out;
+  animation:modal-backdrop-in .2s ease-out;
 }
 #app.modal-entering .modal-backdrop:last-child>.modal {
-  animation:modal-jelly-in .38s;
+  /* 名字里的 jelly 是历史遗留（原来这里做果冻回弹），现在只是一条普通的淡入上浮。
+     刻意没改名：门控注释和本地笔记都按这个名字找它，改名字反而容易对不上。 */
+  animation:modal-jelly-in .22s ease-out;
 }
 @keyframes modal-backdrop-in {
   0% {
@@ -1595,25 +1599,7 @@ button:disabled {
 @keyframes modal-jelly-in {
   0% {
     opacity:0;
-    transform:translateY(40px) scale(.95);
-    animation-timing-function:cubic-bezier(.22,1,.36,1);
-  }
-  58% {
-    opacity:1;
-    transform:translateY(0) scale(1);
-    animation-timing-function:ease-out;
-  }
-  70% {
-    transform:translateY(0) scaleX(1.02) scaleY(.98);
-    animation-timing-function:ease-in-out;
-  }
-  82% {
-    transform:translateY(0) scaleX(.992) scaleY(1.008);
-    animation-timing-function:ease-in-out;
-  }
-  92% {
-    transform:translateY(0) scaleX(1.004) scaleY(.996);
-    animation-timing-function:ease-in-out;
+    transform:translateY(15px) scale(.98);
   }
   100% {
     opacity:1;

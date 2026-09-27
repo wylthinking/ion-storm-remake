@@ -99,7 +99,7 @@ async function loadEnabledCustomPresets(force = false): Promise<void> {
   }
   // 本地/联机弹窗只在切到「自定义模式」后才读得到这份列表（见 customSourceField），经典模式下
   // 它渲染不出任何差异。而 openSetupModal 是「先 render、预设异步返回后又 render 一次」：
-  // 第二次 render 会重建整块 DOM，让刚播放的弹窗入场果冻动画直接失效（此时 #app.modal-entering
+  // 第二次 render 会重建整块 DOM，让刚播放的弹窗入场动画直接失效（此时 #app.modal-entering
   // 已置位，新建的 .modal 拿不到动画类，动画等于没播）。所以这种无可见差异的重渲染直接跳过；
   // 用户切到自定义模式时，那次 change 事件自己会 render（见 #modalRuleset 的监听）。
   if (!force && (modal?.kind === "local" || modal?.kind === "online") && modal.ruleset !== "custom") return;
@@ -2592,7 +2592,7 @@ function renderUserRow(user: PublicUser, self?: PublicUser): string {
  * 原来是占一个路由的独立页面（renderInvitePage + renderPageShell + /invite 短路分支），
  * 现在和「设置」「排行榜」同一层：结构仍是 .modal-backdrop > section.modal，因此直接吃到
  * #app.modal-entering 的入场动画——页面骨架那条路径没有这个门控，原来在 /invite 上点「编辑邀请码」
- * 是完全没有果冻回弹的。列多（16 列），宽度沿用设置弹窗那一档，靠 .user-table-wrap 横向滚动。
+ * 是完全没有入场动画的。列多（16 列），宽度沿用设置弹窗那一档，靠 .user-table-wrap 横向滚动。
  */
 function renderInviteModal(): string {
   const allowed = Boolean(currentUser?.superAdmin);
@@ -2765,7 +2765,7 @@ function renderLeaderboardModal(): string {
     }
     `;
   // 弹窗结构与 renderSettingsModal 一致：.modal-backdrop > section.modal，因此同样吃到
-  // #app.modal-entering 的果冻回弹入场动画（见 styles.css）。
+  // #app.modal-entering 的入场动画（淡入 + 轻微上浮，见 styles.css）。
   return `
     <div class="modal-backdrop" data-backdrop-dismiss>
       <section class="modal panel leaderboard-dialog" role="dialog" aria-modal="true" aria-labelledby="leaderboardTitle">
@@ -7891,7 +7891,7 @@ async function openLeaderboard(): Promise<void> {
   if (location.pathname === "/leaderboard") history.replaceState({}, "", "/");
   modal = { kind: "leaderboard" };
   // loadLeaderboard 末尾会 render() 一次，所以这里刻意不先 render：只渲染一次，
-  // #app.modal-entering 才不会被第二次渲染清掉（否则果冻回弹动画等于没播）。
+  // #app.modal-entering 才不会被第二次渲染清掉（否则入场动画等于没播）。
   await loadLeaderboard();
 }
 
@@ -7957,7 +7957,7 @@ async function openInviteManagement(): Promise<void> {
   // 关闭时退回设置弹窗，不然会一路退到主界面。深链 /invite 进来时 modal 不是设置弹窗，照旧退到主界面。
   modal = { kind: "invite", fromSettings: modal?.kind === "settings" };
   // loadInvitations 末尾会 render() 一次，所以这里刻意不先 render：只渲染一次，
-  // #app.modal-entering 才不会被第二次渲染清掉（否则果冻回弹动画等于没播）。
+  // #app.modal-entering 才不会被第二次渲染清掉（否则入场动画等于没播）。
   await loadInvitations();
 }
 
