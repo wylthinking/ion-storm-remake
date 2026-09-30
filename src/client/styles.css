@@ -45,14 +45,17 @@ button:disabled {
 .shell.has-request-notice {
   grid-template-rows:auto auto 1fr auto;
 }
+/* 顶栏是这一屏唯一的一层头部：Logo 靠左、功能按钮靠右，
+   中间那一组（倒计时 + 状态胶囊，.topbar-status）绝对居中叠在两者上方——
+   它自己占两行（倒计时在上、胶囊在下），整体以顶栏中线为轴左右居中。 */
 .topbar {
   -webkit-backdrop-filter:blur(16px);
   backdrop-filter:blur(16px);
   z-index:5;
   background:#fffcf6e0;
   border-bottom:1px solid #20242a1f;
-  grid-template-columns:minmax(160px,1fr) auto minmax(180px,1fr);
-  align-items:center;
+  grid-template-columns:auto minmax(0,1fr) auto;
+  align-items:start;
   gap:12px;
   padding:14px clamp(12px,3vw,28px);
   display:grid;
@@ -90,14 +93,20 @@ button:disabled {
   font-size:12px;
   display:block;
 }
+/* 回合倒计时：从原来 118×64 的深色大块压成紧凑胶囊，是中间那一组的第一行（状态胶囊在它下面）。
+   高度约 28px，不会比状态胶囊明显高，也不会把顶栏撑得更高。 */
 .timer {
   text-align:center;
   color:#fff;
   background:#20242a;
-  border-radius:8px;
-  min-width:118px;
-  padding:9px 16px;
-  box-shadow:0 10px 28px #20242a38;
+  border-radius:999px;
+  flex:0 0 auto;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+  padding:5px 12px;
+  box-shadow:0 8px 20px #20242a2e;
+  display:inline-flex;
 }
 .timer.mine {
   background:#226b70;
@@ -106,13 +115,14 @@ button:disabled {
   background:#20242a;
 }
 .timer strong {
-  font-size:25px;
+  font-size:16px;
   line-height:1;
   display:block;
 }
 .timer span {
   color:#d8dedf;
   font-size:11px;
+  line-height:1;
 }
 .timer.danger {
   background:#b63e32;
@@ -123,11 +133,91 @@ button:disabled {
     transform:scale(1.03);
   }
 }
+/* 顶栏右侧按钮组：间距比主区域小一档。顶栏用 align-items:start 对齐，所以顶栏里那一个
+   下压 8px 让按钮的中线跟 Logo 方块（38px）对齐；其余地方（弹窗 / 规则卡片）的 .top-actions 不受影响。 */
 .top-actions {
   flex-wrap:wrap;
   justify-content:flex-end;
-  gap:8px;
+  gap:6px;
   display:flex;
+}
+.topbar>.top-actions {
+  margin-top:8px;
+}
+/* 倒计时 + 状态胶囊：顶栏中间那一组，两行竖排、整体水平居中（绝对定位，以顶栏中线为轴）。
+   上：倒计时胶囊；下：一排状态胶囊。它不占网格列，所以 Logo 与按钮组依旧贴住左右两端，
+   顶栏高度由这一组决定。 */
+.topbar-status {
+  text-align:center;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  gap:6px;
+  /* 居中但不许压到左右两端：窄桌面（901-1200px）时先裁胶囊尾部，别和 Logo / 按钮叠在一起。 */
+  max-width:min(100%, 70vw);
+  display:flex;
+  position:absolute;
+  top:0;
+  bottom:0;
+  left:50%;
+  transform:translateX(-50%);
+}
+/* 对局状态标签（当前 / 出牌机会 / 牌库 / 生成物 / 房间码 / 确认 …）：
+   从「独立占一行的 .room-panel」→「棋盘上方的信息带」→ 现在是倒计时正下方的一排小胶囊，
+   整排水平居中。两档优先级：.chip-primary（当前出手的人 / 出牌机会 / 牌库）深色文字 + 描边，
+   其余是灰底次要信息；整排 nowrap + overflow:hidden，宽度不够时从右端裁掉，越靠左越重要。 */
+.game-status {
+  flex-wrap:nowrap;
+  justify-content:center;
+  align-items:center;
+  gap:4px;
+  max-width:100%;
+  min-width:0;
+  overflow:hidden;
+  display:flex;
+}
+.game-status>span {
+  color:#4b545c;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+  background:#eee9e0;
+  border-radius:999px;
+  align-items:center;
+  min-height:22px;
+  padding:0 9px;
+  font-size:11px;
+  line-height:1;
+  display:inline-flex;
+}
+/* 第一梯队：一眼要看到的三个数（当前出手的人 / 出牌机会 / 牌库），从灰底里浮出来。 */
+.game-status>span.chip-primary {
+  color:#20242a;
+  background:#fbf7f0;
+  font-weight:700;
+  box-shadow:inset 0 0 0 1px #20242a2e;
+}
+/* 决斗模式的彩色徽章：底色由 .duel-badge 决定，这里只把高度和字号拉齐成胶囊。 */
+.game-status>span.duel-badge {
+  color:#fff;
+  min-height:22px;
+  padding:0 9px;
+  font-size:11px;
+}
+/* 房间码是标签里唯一需要「一眼能念给别人听」的信息，给它一块底色，别混在灰标签里。 */
+.game-status .room-code {
+  color:#195d62;
+  background:#e3f1ee;
+  border-radius:999px;
+  flex:0 0 auto;
+  padding:4px 10px;
+  font-size:13px;
+  font-weight:900;
+  line-height:1;
+}
+/* 这一条只放得下一行：昵称后面那个 @用户名 换行会把整条顶高，这里整段去掉。 */
+.game-status br,
+.game-status .username-tag {
+  display:none;
 }
 .btn {
   color:#20242a;
@@ -208,13 +298,24 @@ button:disabled {
   background:#fff0ee;
   border-color:#842b2252;
 }
+/* 第一人称视角的对局布局，从上到下：
+   对手席横排 → [左侧出牌记录 | 棋盘] → 我的头像 → 手牌区。
+   倒计时和状态胶囊都在顶栏里（.topbar-status），所以这里没有额外的一行，
+   棋盘（溶液区 / 生成物区）直接顶到对手席下面。
+   对手席 / 我的头像 / 手牌区横跨两列，出牌记录的纵向范围固定，不再随人数伸缩。 */
 .layout {
-  grid-template-columns:260px 1fr;
-  gap:16px;
+  grid-template-columns:260px minmax(0,1fr);
+  grid-template-rows:auto minmax(0,1fr) auto auto;
+  gap:12px 16px;
   min-height:0;
   padding:16px clamp(10px,3vw,28px);
   display:grid;
   overflow:hidden;
+}
+.layout>.opponents-row,
+.layout>.self-seat,
+.layout>.handbar {
+  grid-column:1/-1;
 }
 .request-notice {
   color:#5b4314;
@@ -243,14 +344,14 @@ button:disabled {
   border-radius:8px;
   box-shadow:0 14px 34px #4d453a14;
 }
+/* 左侧固定栏：一行「牌库 / 弃牌」计数 + 出牌记录。
+   高度由 .layout 中间那一行给（上边对手席、下边我的头像），自己内部滚动。 */
 .sidebar {
+  grid-column:1;
   flex-direction:column;
-  align-self:stretch;
   min-height:0;
   padding:12px;
   display:flex;
-  position:sticky;
-  top:82px;
   overflow:hidden;
 }
 .section-title {
@@ -263,13 +364,6 @@ button:disabled {
   margin-bottom:10px;
   font-size:12px;
   display:flex;
-}
-.player-list {
-  flex:0 auto;
-  gap:8px;
-  min-height:0;
-  display:grid;
-  overflow-y:auto;
 }
 .player {
   background:#fffaf2;
@@ -348,6 +442,78 @@ button:disabled {
 .player-kick:hover {
   background:#fbded7;
 }
+/* 对手席：顶栏下方一整行，按人数水平居中，并且强制单行——最多 10 个对手也排在一行里，绝不换行。
+   flex:1 1 0 让每个席位等分这一行（相当于 calc(100% / 人数)），min-width:0 允许继续压缩；
+   max-width 只在人少、空隙多的时候兜底，免得 1 个对手被拉成一整条。 */
+.opponents-row {
+  flex-wrap:nowrap;
+  justify-content:center;
+  align-items:stretch;
+  gap:10px;
+  min-width:0;
+  display:flex;
+}
+.opponents-row>.player {
+  flex:1 1 0;
+  min-width:0;
+  max-width:288px;
+}
+/* 席位卡内部：宽度不够时文字省略，而不是把卡片顶宽或者换行。 */
+.opponents-row .player-main {
+  overflow:hidden;
+}
+.opponents-row .player-main br {
+  display:none;
+}
+.opponents-row .user-name {
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  vertical-align:bottom;
+  max-width:100%;
+  overflow:hidden;
+  display:inline-block;
+}
+.opponents-row .player-main small {
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  overflow:hidden;
+  display:block;
+}
+/* 我的头像：手牌区正上方、水平居中的一条紧凑卡，宽度只占屏幕中间 20%~30%。 */
+.self-seat {
+  justify-content:center;
+  display:flex;
+}
+.self-seat>.player {
+  width:clamp(240px,26vw,480px);
+}
+.self-player {
+  background:#f6fcf9;
+  box-shadow:inset 0 0 0 1px #226b7038;
+}
+/* 紧凑单行：昵称 + 手牌 N · 积分 M（联机房间里才有托管 / 退出按钮，内联在右端）。
+   高度从原来四行多的 ~120px 压到 44px 上下，让出来的高度归手牌区。 */
+.self-player.compact {
+  align-items:center;
+  justify-content:center;
+  gap:12px;
+  padding:6px 14px;
+  display:flex;
+}
+.self-meta {
+  color:#4a5259;
+  white-space:nowrap;
+  font-size:12px;
+}
+.self-player.compact .player-tools {
+  display:flex;
+  gap:6px;
+}
+/* 紧凑卡只留昵称：@用户名 那一行（renderPlayerName 里的 br + small）只会再撑出一行。 */
+.self-seat br,
+.self-seat .username-tag {
+  display:none;
+}
 .room-exit {
   min-height:38px;
   padding:0 13px;
@@ -368,21 +534,7 @@ button:disabled {
 .status-dot.online {
   background:#2f8d5b;
 }
-.main {
-  grid-template-rows:auto minmax(0,1fr);
-  gap:14px;
-  min-width:0;
-  min-height:0;
-  display:grid;
-}
-.room-panel {
-  justify-content:space-between;
-  align-items:center;
-  gap:12px;
-  min-height:0;
-  padding:8px 10px;
-  display:flex;
-}
+/* 房间码：原来在 .room-identity-row 里，现在是对局状态标签里的第一个标签。 */
 .room-code {
   letter-spacing:0;
   flex:none;
@@ -394,31 +546,6 @@ button:disabled {
 .room-code.reserved-room-code {
   color:#b78208;
   text-shadow:0 1px #fff4c9;
-}
-.room-identity-row {
-  flex-wrap:wrap;
-  align-items:center;
-  gap:8px;
-  display:flex;
-}
-.room-panel .section-title {
-  margin-bottom:4px;
-}
-.room-stats {
-  flex-wrap:wrap;
-  align-items:center;
-  gap:6px;
-  display:flex;
-}
-.room-stats span {
-  color:#39424a;
-  background:#f0e8dc;
-  border-radius:8px;
-  align-items:center;
-  min-height:24px;
-  padding:3px 8px;
-  font-size:12px;
-  display:inline-flex;
 }
 .muted {
   color:#69727b;
@@ -1173,16 +1300,18 @@ button:disabled {
   font-size:13px;
   display:block;
 }
+/* 手牌区：单行手牌时不要撑出一大片空白，上限交给下面各断点按「两行牌」算。 */
 .handbar {
   z-index:0;
   background:#fffcf6eb;
   border-top:1px solid #20242a1f;
-  min-height:244px;
+  min-height:0;
   padding:12px clamp(10px,3vw,28px) 16px;
   position:relative;
 }
+/* 手牌区：合法操作列下线后只剩一列，手牌占满整行、整块居中。 */
 .hand-layout {
-  grid-template-columns:minmax(0,1fr) 360px;
+  grid-template-columns:minmax(0,1fr);
   align-items:stretch;
   gap:12px;
   display:grid;
@@ -1191,6 +1320,8 @@ button:disabled {
   grid-column:1/-1;
   margin:0;
 }
+/* 原「合法操作」栏（.actions + .action-btn）：待重新设计。renderHandbar 已经不再输出这个容器，
+   这里的样式先原样留着，重新设计时接回去即可。 */
 .actions {
   flex-direction:column;
   align-items:stretch;
@@ -1230,11 +1361,11 @@ button:disabled {
 }
 .log {
   color:#4b545c;
-  flex:33.333%;
+  flex:1 1 auto;
   grid-auto-rows:max-content;
   align-content:start;
   gap:6px;
-  min-height:calc(33.333% + 8px);
+  min-height:0;
   font-size:13px;
   display:grid;
   overflow:hidden auto;
@@ -2329,58 +2460,80 @@ button:disabled {
   box-shadow:0 18px 42px #c6972f52;
 }
 @media (width>=901px) {
-  .play-wrap {
+  /* 手牌区：合法操作列下线后，这里只需要装「最多两行牌」。
+     .card 高 96px + 行间距 8px → 两行 = 200px，正好落在 160-200px 区间；
+     再加上标题一行（约 20px）、区块间距 8px 和上下内边距 28px，所以外层封顶 264px。
+     多出来的行不撑高面板，而是在牌区内部纵向滚动；空出来的高度全部给棋盘（.layout 的 1fr 行）。 */
+  .handbar {
     flex-direction:column;
-    gap:14px;
+    max-height:264px;
     min-height:0;
-    display:flex;
-  }
-  .play-wrap .board {
-    flex:1 1 0;
-    height:auto;
-    min-height:0;
-  }
-  .play-wrap .handbar {
-    flex-direction:column;
-    flex:0 0 min(344px,50% - 7px);
-    min-height:min(244px,50% - 7px);
-    max-height:calc(50% - 7px);
     display:flex;
     overflow:hidden;
   }
-  .play-wrap .hand-layout {
+  .hand-layout {
     flex:auto;
     grid-template-rows:minmax(0,1fr);
     align-items:stretch;
     min-height:0;
     overflow:hidden;
   }
-  .play-wrap .hand-layout>div:first-child {
+  .hand-layout>div:first-child {
     flex-direction:column;
     min-height:0;
     display:flex;
   }
-  .play-wrap .hand-layout .card-grid {
+  /* 手牌整体居中：一排牌横着居中、不足两行时竖着也居中。
+     max-height 卡在两行牌的高度上（200px），超过就在这块区域里滚动，不再往下撑。 */
+  .hand-layout .card-grid {
+    justify-content:center;
+    align-content:center;
     flex:auto;
+    max-height:min(200px,32vh);
     min-height:0;
     overflow-y:auto;
   }
 }
 @media (width<=900px) {
-  .play-wrap {
-    display:contents;
-  }
   .shell {
     height:auto;
     min-height:100dvh;
     overflow:visible;
   }
+  /* 窄屏放不下「绝对居中的两行」，这一组拆回网格里的三行：
+     第 1 行 品牌 + 倒计时 / 第 2 行 状态胶囊（横向滚动）/ 第 3 行 按钮组。
+     计时和状态是 .topbar-status 的子元素，用 display:contents 拆开让它们各自落格。 */
   .topbar {
-    grid-template-columns:1fr auto;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:center;
+  }
+  .topbar-status {
+    position:static;
+    transform:none;
+    display:contents;
+  }
+  .topbar>.brand {
+    grid-area:1/1/2/2;
+  }
+  .topbar>.topbar-status>.timer {
+    grid-area:1/2/2/3;
   }
   .top-actions {
-    grid-column:1/-1;
+    grid-area:3/1/4/3;
     justify-content:flex-start;
+    margin-top:0;
+  }
+  /* 状态胶囊在窄屏不再裁剪：横向滚动，短标签也不会被压扁，右端淡出提示还有内容。 */
+  .game-status {
+    overscroll-behavior-inline:contain;
+    scrollbar-width:none;
+    -webkit-mask-image:linear-gradient(90deg, #000 calc(100% - 12px), #0000);
+    mask-image:linear-gradient(90deg, #000 calc(100% - 12px), #0000);
+    grid-area:2/1/3/3;
+    overflow-x:auto;
+  }
+  .game-status>span {
+    flex:0 0 auto;
   }
   .layout,.board,.hand-layout,.setup-grid,.modal-grid,.rules-editor-dialog .rules-display-settings {
     grid-template-columns:1fr;
@@ -2411,6 +2564,7 @@ button:disabled {
     flex:auto;
   }
   .layout {
+    grid-template-rows:none;
     gap:10px;
     padding:10px;
   }
@@ -2419,18 +2573,23 @@ button:disabled {
     position:static;
     overflow:visible;
   }
-  .player-list {
-    max-height:none;
-    overflow:visible;
+  /* 窄屏仍然不换行：对手席改成横向滑动的一行（每张卡固定宽度，手指左右滑），
+     我的头像占满一行。 */
+  .opponents-row {
+    justify-content:flex-start;
+    overflow-x:auto;
+  }
+  .opponents-row>.player {
+    flex:0 0 168px;
+    max-width:none;
+  }
+  .self-seat>.player {
+    width:100%;
   }
   .log {
     min-height:0;
     max-height:180px;
     overflow:auto;
-  }
-  .room-panel {
-    flex-direction:column;
-    align-items:stretch;
   }
   .room-edit-fields,.room-edit-summary {
     grid-template-columns:1fr;
@@ -2475,12 +2634,16 @@ button:disabled {
     min-height:0;
     padding:10px;
   }
+  /* 窄屏牌面高度 88px：两行 = 88×2 + 6 = 182px，同样落在「两个卡牌高度」里。 */
   .handbar .hand-layout>div:first-child .card-grid {
     overscroll-behavior:contain;
-    max-height:min(40dvh,340px);
+    justify-content:center;
+    align-content:center;
+    max-height:min(182px,34dvh);
     padding:2px 2px 6px;
     overflow-y:auto;
   }
+  /* 保留给重新设计后的合法操作栏（当前渲染已被跳过）。 */
   .handbar .actions {
     min-height:0;
     max-height:min(42dvh,360px);
@@ -2621,12 +2784,12 @@ button:disabled {
     display:none;
   }
   .timer {
-    border-radius:10px;
-    min-width:76px;
-    padding:6px 9px;
+    border-radius:999px;
+    min-width:0;
+    padding:5px 11px;
   }
   .timer strong {
-    font-size:21px;
+    font-size:15px;
   }
   .topbar>.top-actions {
     overscroll-behavior-inline:contain;
@@ -2646,7 +2809,8 @@ button:disabled {
     flex:none;
   }
   .account-menu-popover {
-    top:max(104px, calc(env(safe-area-inset-top) + 96px));
+    /* 窄屏顶栏现在是三行（品牌+计时 / 状态标签 / 按钮组），浮层要落在按钮组下面。 */
+    top:max(160px, calc(env(safe-area-inset-top) + 152px));
     right:auto;
     left:max(10px, env(safe-area-inset-left));
     z-index:200;
@@ -2673,14 +2837,16 @@ button:disabled {
     width:100%;
     margin-left:0;
   }
-  .room-panel {
-    padding:10px;
+  /* 手机竖屏：状态标签横向排布本身就够挤了，去掉右端淡出；高度只比桌面宽裕一点，
+     别再往上顶（整条顶栏还是三行：品牌 + 倒计时 / 胶囊 / 按钮组）。 */
+  .game-status {
+    -webkit-mask-image:none;
+    mask-image:none;
+    gap:4px;
   }
-  .room-stats {
-    gap:5px;
-  }
-  .room-stats span {
-    min-height:28px;
+  .game-status>span {
+    min-height:26px;
+    padding:0 9px;
   }
   .modal-backdrop {
     place-items:center;
@@ -3090,12 +3256,14 @@ button:disabled {
   display:none;
 }
 /* 彻底隐藏所有对局内的面板与区域，只留背景幕布：
-   .sidebar（座位 / 牌库 / 弃牌堆）、.room-panel（房间信息条）、
+   .sidebar（出牌记录 / 牌库 / 弃牌堆）、.opponents-row（对手席）、.self-seat（我的头像）、
    .handbar（手牌 / 动作筛选）、.board 及 .zone（「溶液区」「生成物区」，
-   .zone.panel 的半透明底色就是之前屏幕中部那条白色长条）。 */
+   .zone.panel 的半透明底色就是之前屏幕中部那条白色长条）。
+   顶栏（含倒计时和状态胶囊）在起始界面走的是另一支模板，本来就不输出。 */
 .start-screen .sidebar,
+.start-screen .opponents-row,
+.start-screen .self-seat,
 .start-screen .handbar,
-.start-screen .room-panel,
 .start-screen .board,
 .start-screen .zone {
   display:none;
@@ -3103,6 +3271,7 @@ button:disabled {
 /* 隐藏后 .layout 只剩一列，收掉为对局准备的双列布局与内边距。 */
 .start-screen .layout {
   grid-template-columns:minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr);
   padding:0;
 }
 /* 屏幕正中整组：标题牌 + 三个主入口 + 音效 / 排行榜 / 个人入口。

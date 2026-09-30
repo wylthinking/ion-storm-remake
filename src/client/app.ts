@@ -1567,6 +1567,10 @@ function render(): void {
   // 缓存只在离开起始界面时清空，因此每次重新进入都会重新随机一次背景。
   // 「本地游戏 / 联机游戏 / 加入房间」三个入口只在起始界面的 .lobby-actions-row 里出现：下面的 topbar
   // 是 room || game 的界面，在里面再放这三个按钮会让人在对局中途切模式、把当前 room/game 状态冲掉。
+  // 对局 / 房间状态下顶部只有这一层：原来单独占一行的 .room-panel（本地对局 / 当前 / 出牌机会 / 牌库 /
+  // 生成物 + 退出等按钮）已经并进顶栏——状态标签见 renderGameStatus，按钮见 renderGameActions。
+  // 回合倒计时 + 状态标签最终也并进这条顶栏（.topbar 中列，见 .topbar-status），不再单独占一行、
+  // 也不浮在棋盘上方：renderTimer 依旧按 #timer 取元素，元素换了位置，取元素的方式没变。
   const startScreen = !room && !game;
   if (!startScreen) resetStartScreenBackground();
   // 五层浮层先各自渲染成字符串：既要塞进下面的模板，也要用来算末尾那个入场动画门控的「浮层身份签名」。
@@ -1604,22 +1608,23 @@ function render(): void {
           <button class="mark" type="button" data-act="open-lucky" aria-label="查看今日幸运值">Ion</button>
           <div><h1>离子风暴</h1><span>130 张化学反应牌 · 本地与联机</span></div>
         </div>
-        <div id="timer" class="timer"><strong>--</strong><span>当前回合</span></div>
+        <div class="topbar-status">
+          <div id="timer" class="timer"><strong>--</strong><span>当前回合</span></div>
+          ${renderGameStatus()}
+        </div>
         <div class="top-actions">
+          ${renderGameActions()}
           ${renderAccountControls()}
           <button class="btn" data-act="open-settings">设置</button>
         </div>
       </header>`}
       ${requestNotice}
       <main class="layout">
+        ${renderOpponentSeats()}
         ${renderSidebar()}
-        <section class="main">
-          ${renderRoomPanel()}
-          <div class="play-wrap">
-            ${renderBoard()}
-            ${renderHandbar()}
-          </div>
-        </section>
+        ${renderBoard()}
+        ${renderSelfSeat()}
+        ${renderHandbar()}
       </main>
       ${renderDrawAnimations()}
       <div id="cardDescriptionBubble" class="card-description-bubble" role="tooltip" hidden></div>
@@ -1927,8 +1932,109 @@ function renderAccountControls(options: { leaderboard?: boolean; menuOnly?: bool
   return `${menu}${options.leaderboard === false ? "" : `<button class="btn" data-act="open-leaderboard">排行榜</button>`}`;
 }
 
+/** 席位来源：对局里用 game.players，房间大厅里用 room.players。 */
+function currentSeats() {
+  return game?.players ?? room?.players ?? [];
+}
+type SeatView = ReturnType<typeof currentSeats>[number];
+
+/**
+ * 第一人称视角里「自己」是哪个座位：联机（含房间大厅）看 selfId 对应的座位；
+ * 本地热座没有固定身份，看当前行动座位——和手牌区 visibleSeat() 的口径一致，
+ * 这样「我的头像」永远正好是手牌上方那张卡。
+ */
+function selfSeatOf(seats: SeatView[]): SeatView | undefined {
+  const mine = seats.find((seat) => seat.id === selfId);
+  if (!game || game.mode === "online") return mine;
+  return activeSeat() ?? mine;
+}
+
+/**
+ * 单个席位卡片。上方对手席和手牌正上方的「我的头像」共用这一份，免得两处逻辑漂移：
+ * options.self 为真时走上面的紧凑单行分支（昵称 / 手牌 / 积分），否则是对手席那张信息卡。
+ * index 是它在完整席位数组里的下标：game.currentPlayer 存的就是下标，所以对手列表
+ * 过滤掉自己之后不能重新编号，否则高亮会错位。
+ */
+function renderSeatCard(seat: SeatView, index: number, options: { self?: boolean } = {}): string {
+  const terminal = game?.status === "ended";
+  const viewedSeat = terminal ? visibleSeat() : undefined;
+  const active = terminal ? viewedSeat?.id === seat.id : Boolean(game && index === game.currentPlayer);
+  const handCount = "hand" in seat ? seat.hand.length : seat.handCount;
+  const automatic = Boolean(seat.bot);
+  const status = automatic ? "机器人" : seat.online ? "在线" : "离线";
+  const readyToStart =
+    ("readyToStart" in seat && Boolean(seat.readyToStart)) ||
+    Boolean(room?.players.find((member) => member.id === seat.id)?.readyToStart);
+  const showReady = room?.status === "lobby" || room?.status === "ended";
+  const ready = mode === "online" && showReady && !automatic ? ` · ${readyToStart ? "已确认" : "未确认"}` : "";
+  const subtitle = seat.profile?.subtitle;
+  const showPoints =
+    typeof seat.profile?.points === "number" &&
+    (mode === "online" ? Boolean(seat.accountId) && !automatic : Boolean(currentUser && seat.accountId === currentUser.id));
+  const points = showPoints ? ` · 积分 ${seat.profile!.points}` : "";
+  const isCreator = Boolean(room && seat.accountId && seat.accountId === room.creatorAccountId);
+  const isBanker = Boolean(mode === "online" && room?.bankerPlayerId === seat.id);
+  const roleBadges = `${isCreator ? `<span class="owner-badge">房主</span>` : ""}${isBanker ? `<span class="banker-badge">庄家</span>` : ""}`;
+  const roleBadgeClass = "role-badges";
+  const isRoomMember = Boolean(room?.players.some((member) => member.id === seat.id));
+  const canKick = Boolean(
+    room &&
+    currentUser?.id === room.creatorAccountId &&
+    (room.status === "lobby" || room.status === "ended") &&
+    isRoomMember &&
+    seat.id !== selfId,
+  );
+  const canLeave = Boolean(room && !isOnlineGameRunning() && currentUser?.id !== room.creatorAccountId && isRoomMember && seat.id === selfId);
+  const canCancelAutoplay = Boolean(mode === "online" && seat.id === selfId && !automatic && seat.forcedAutoplay);
+  // 我的头像：手牌区正上方的一条紧凑卡，只留昵称 / 手牌数 / 积分。
+  // 原来这张卡是昵称、@用户名、头衔、房主庄家徽章、在线状态 + 绿点，四行多高，白占手牌区一层空间。
+  // 托管 / 退出按钮只在联机房间里才渲染，内联在右端、不额外占行。
+  // 终局仍然带 data-seat-id：点它能看自己的手牌（renderHandbar 的终局提示依赖这个）。
+  if (options.self) {
+    const selfTools = `${canCancelAutoplay ? `<button class="player-kick" data-act="cancel-autoplay">取消托管</button>` : ""}${canLeave ? `<button class="player-kick" data-act="leave-room" aria-label="退出房间">退出</button>` : ""}`;
+    return `<div class="player self-player compact ${active ? "active" : ""} ${terminal ? "selectable" : ""} ${isSeatAnimating(seat.id) ? "drawing" : ""}" ${terminal ? `data-seat-id="${escapeAttr(seat.id)}"` : ""}>
+                    ${renderPlayerName(seat)}<span class="self-meta">手牌 ${handCount}${points}</span>${selfTools ? `<span class="player-tools">${selfTools}</span>` : ""}
+                  </div>`;
+  }
+  return `<div class="player ${active ? "active" : ""} ${terminal ? "selectable" : ""} ${isSeatAnimating(seat.id) ? "drawing" : ""}" ${terminal ? `data-seat-id="${escapeAttr(seat.id)}"` : ""}>
+                    <div class="player-main">${renderPlayerName(seat)}${roleBadges ? `<span class="${roleBadgeClass}">${roleBadges}</span>` : ""}${subtitle ? `<br><small class="user-title">${escapeHtml(subtitle)}</small>` : ""}<br><small>${status}${ready} · 手牌 ${handCount}${points}${seat.forcedAutoplay ? " · 托管" : ""}</small></div>
+                    <div class="player-tools"><span class="status-dot ${seat.online || automatic ? "online" : ""}"></span>${canCancelAutoplay ? `<button class="player-kick" data-act="cancel-autoplay">取消托管</button>` : ""}${canKick ? `<button class="player-kick" data-act="kick-room-player" data-player-id="${escapeAttr(seat.id)}" aria-label="移出 ${escapeAttr(seat.nickname)}">移出</button>` : ""}${canLeave ? `<button class="player-kick" data-act="leave-room" aria-label="退出房间">退出</button>` : ""}</div>
+                  </div>`;
+}
+
+/** 对手席：顶栏下方的横排，按人数水平居中；自己由 renderSelfSeat 单独出，不在这里。 */
+function renderOpponentSeats(): string {
+  const seats: SeatView[] = currentSeats();
+  const self = selfSeatOf(seats);
+  const opponents = seats
+    .map((seat, index) => ({ seat, index }))
+    .filter(({ seat }) => seat.id !== self?.id);
+  return `
+    <div class="opponents-row">
+      ${opponents.length
+      ? opponents.map(({ seat, index }) => renderSeatCard(seat, index)).join("")
+      : seats.length
+        ? ""
+        : `<div class="player"><div class="player-main"><strong>空席位</strong><br><small>从顶部选择游戏模式</small></div><span class="status-dot"></span></div>`}
+    </div>
+  `;
+}
+
+/** 我的头像：手牌区正上方居中的一条紧凑卡，只有昵称 / 手牌数 / 积分（见 renderSeatCard 的 self 分支）。 */
+function renderSelfSeat(): string {
+  const seats: SeatView[] = currentSeats();
+  const self = selfSeatOf(seats);
+  if (!self) return "";
+  return `<div class="self-seat">${renderSeatCard(self, seats.indexOf(self), { self: true })}</div>`;
+}
+
+/**
+ * 左侧固定栏：一行「牌库 / 弃牌堆」计数 + 出牌记录。
+ * 纵向范围由 .layout 中间那一行决定（上边是对手席、下边是我的头像），不再随人数伸缩，
+ * 所以 .log 直接 flex:1 撑满、内部滚动（原来靠 flex:33.333% 跟着席位数变）。
+ * 原来这行右侧还有个「席位 x/10」蓝标：席位数量在顶栏和手牌上方都能看出来，这里删掉。
+ */
 function renderSidebar(): string {
-  const seats = game?.players ?? room?.players ?? [];
   const deckCount = game ? game.zones.drawPile.length : totalCards();
   const discardCount = game ? game.zones.discard.length : 0;
   const inspectRender = (() => {
@@ -1960,85 +2066,104 @@ function renderSidebar(): string {
     .join("");
   return `
     <aside class="sidebar panel">
-      <div class="section-title"><span>席位</span><span>${seats.length || 0}/10</span></div>
-      <div class="player-list">
-        ${seats.length
-      ? seats
-        .map((p, index) => {
-          const terminal = game?.status === "ended";
-          const viewedSeat = terminal ? visibleSeat() : undefined;
-          const active = terminal ? viewedSeat?.id === p.id : game && index === game.currentPlayer;
-          const handCount = "hand" in p ? p.hand.length : p.handCount;
-          const automatic = Boolean(p.bot);
-          const status = automatic ? "机器人" : p.online ? "在线" : "离线";
-          const readyToStart =
-            ("readyToStart" in p && Boolean(p.readyToStart)) ||
-            Boolean(room?.players.find((member) => member.id === p.id)?.readyToStart);
-          const showReady = room?.status === "lobby" || room?.status === "ended";
-          const ready = mode === "online" && showReady && !automatic ? ` · ${readyToStart ? "已确认" : "未确认"}` : "";
-          const subtitle = p.profile?.subtitle;
-          const showPoints =
-            typeof p.profile?.points === "number" &&
-            (mode === "online" ? Boolean(p.accountId) && !automatic : Boolean(currentUser && p.accountId === currentUser.id));
-          const points = showPoints ? ` · 积分 ${p.profile!.points}` : "";
-          const isCreator = Boolean(room && p.accountId && p.accountId === room.creatorAccountId);
-          const isBanker = Boolean(mode === "online" && room?.bankerPlayerId === p.id);
-          const roleBadges = `${isCreator ? `<span class="owner-badge">房主</span>` : ""}${isBanker ? `<span class="banker-badge">庄家</span>` : ""}`;
-          const roleBadgeClass = "role-badges";
-          const isRoomMember = Boolean(room?.players.some((member) => member.id === p.id));
-          const canKick = Boolean(
-            room &&
-            currentUser?.id === room.creatorAccountId &&
-            (room.status === "lobby" || room.status === "ended") &&
-            isRoomMember &&
-            p.id !== selfId,
-          );
-          const canLeave = Boolean(room && !isOnlineGameRunning() && currentUser?.id !== room.creatorAccountId && isRoomMember && p.id === selfId);
-          const canCancelAutoplay = Boolean(mode === "online" && p.id === selfId && !automatic && p.forcedAutoplay);
-          return `<div class="player ${active ? "active" : ""} ${terminal ? "selectable" : ""} ${isSeatAnimating(p.id) ? "drawing" : ""}" ${terminal ? `data-seat-id="${escapeAttr(p.id)}"` : ""}>
-                    <div class="player-main">${renderPlayerName(p)}${roleBadges ? `<span class="${roleBadgeClass}">${roleBadges}</span>` : ""}${subtitle ? `<br><small class="user-title">${escapeHtml(subtitle)}</small>` : ""}<br><small>${status}${ready} · 手牌 ${handCount}${points}${p.forcedAutoplay ? " · 托管" : ""}</small></div>
-                    <div class="player-tools"><span class="status-dot ${p.online || automatic ? "online" : ""}"></span>${canCancelAutoplay ? `<button class="player-kick" data-act="cancel-autoplay">取消托管</button>` : ""}${canKick ? `<button class="player-kick" data-act="kick-room-player" data-player-id="${escapeAttr(p.id)}" aria-label="移出 ${escapeAttr(p.nickname)}">移出</button>` : ""}${canLeave ? `<button class="player-kick" data-act="leave-room" aria-label="退出房间">退出</button>` : ""}</div>
-                  </div>`;
-        })
-        .join("")
-      : `<div class="player"><div><strong>空席位</strong><br><small>从顶部选择游戏模式</small></div><span class="status-dot"></span></div>`
-    }
-      </div>
-      <hr>
-      <div class="section-title"><span>牌库</span><span>${deckCount} 张</span></div>
-      <div class="section-title"><span>弃牌堆</span><span>${discardCount} 张</span></div>
+      <div class="section-title"><span>牌库 ${deckCount} · 弃牌 ${discardCount}</span></div>
       <div class="log">${inspectRender.legacyHtml}${logHtml}</div>
     </aside>
   `;
 }
 
-function renderRoomPanel(): string {
-  if (!room) {
-    const localStatus = game?.mode === "local" && game.status === "playing";
-    const active = game ? activeSeat() : undefined;
-    return `
-      <section class="room-panel panel">
-        <div>
-          <div class="section-title"><span>${localStatus ? "本地对局" : "对局入口"}</span><span>${localStatus ? "进行中" : "待开始"}</span></div>
-          <div class="room-stats">
-            <span>当前：${active ? renderPlayerName(active) : "无"}</span>
-            <span>出牌机会：${game?.actionPoints ?? 0}</span>
-            <span>牌库：${game?.zones.drawPile.length ?? totalCards()}</span>
-            <span>生成物：${game?.zones.products.length ?? 0}</span>
-            ${game?.pendingDraw ? `<span>待拿牌：${game.pendingDraw.remaining}</span>` : ""}
-          </div>
-        </div>
-        ${game ? `<div class="top-actions"><button class="player-kick room-exit" data-act="leave-room">退出</button>${game && isCustomGame(game) ? `<button class="btn" data-act="view-room-rules">查看规则设置</button>` : ""}${renderAdvancedAiButton()}${game.status === "ended" ? `<button class="btn" data-act="export-game-log">导出日志</button>` : ""}</div>` : ""}
-      </section>
-    `;
+/**
+ * 拼一个状态标签。第一梯队（当前出手的人 / 出牌机会 / 牌库）加 .chip-primary：
+ * 深色文字 + 描边，在一排灰底标签里一眼能挑出来。
+ */
+function statusChip(label: string, options: { primary?: boolean } = {}): string {
+  return `<span${options.primary ? ` class="chip-primary"` : ""}>${label}</span>`;
+}
+
+/**
+ * 对局状态标签：原来是一条单独占一整行的 .room-panel（本地对局 / 当前 / 出牌机会 / 牌库 / 生成物），
+ * 现在整条并进顶栏、紧跟在 Logo 右侧——顶部只剩一层，省掉一整行的高度。
+ * 两档优先级 + 从左到右裁剪（.game-status 是 nowrap + overflow:hidden）：
+ *   第一梯队 = 当前出手的人 / 出牌机会 / 牌库（还要不要牌都看这三个），房间模式下再加房间码；
+ *   第二梯队 = 生成物 / 待拿牌 / 对局状态 / 房间人数底注等，宽度不够时先被裁掉。
+ * 可推导的重复标签一律不放：真人人数已含在「确认 x/y」里，默认初始手牌 / 默认出牌时限不值得占位，
+ * 本地对局的「本地对局」「进行中」在 Logo 副标题和计时器上已经各说过一遍。
+ * 昵称里的 @用户名 由 CSS 隐掉（顶栏只放得下一行）。
+ */
+function renderGameStatus(): string {
+  if (!room && !game) return "";
+  const active = game ? activeSeat() : undefined;
+  const chips: string[] = [];
+  if (room) {
+    const { humanCount, readyPlayers } = roomLobbyCounts();
+    const customRulesLocallyReady = room.rulesetMode !== "custom"
+      || Boolean(room.customRulesHash && preparedCustomRulesHashes.has(room.customRulesHash));
+    const roomPresetId = room.rulesetMode === "custom" ? room.customPresetId : undefined;
+    const roomPresetLabel = roomPresetId
+      ? `预设 ${enabledCustomPresets.find((preset) => preset.id === roomPresetId)?.displayName ?? roomPresetId}`
+      : "";
+    const reservedCode = room.codeKind === "reserved" || room.roomCodeKind === "reserved" || room.isReservedRoomCode;
+    const roomStatus = room.status === "opening-exchange" ? "换牌中" : room.status === "playing" ? "进行中" : room.status === "ended" ? "已结束" : "等待中";
+    // 房间码是标签里唯一需要「一眼能念给别人听」的信息，放最前、单独一块底色。
+    chips.push(`<strong class="room-code ${reservedCode ? "reserved-room-code" : ""}">${room.code}</strong>`);
+    chips.push(statusChip(roomStatus));
+    if (room.rulesetMode === "custom") {
+      chips.push(`<span class="duel-badge custom-mode-badge">${customRulesLocallyReady ? "自定义" : "规则下载中"}</span>`);
+    }
+    if (roomPresetLabel) chips.push(`<span class="duel-badge custom-preset-badge">${escapeHtml(roomPresetLabel)}</span>`);
+    if (room.duelMode) chips.push(`<span class="duel-badge">决斗</span>`);
+    if (isCardWarRoom(room)) chips.push(`<span class="duel-badge card-war-badge">算牌大战</span>`);
+    chips.push(statusChip(`确认 ${readyPlayers}/${humanCount}`));
+    chips.push(statusChip(`席位 ${room.players.length}/${room.capacity}`));
+    if ((room.baseBet ?? 5) !== 5) chips.push(statusChip(`底注 ${room.baseBet}`));
+    if (room.turnTimeLimitSec && room.turnTimeLimitSec !== DEFAULT_TURN_TIME_LIMIT_SEC) chips.push(statusChip(`出牌 ${room.turnTimeLimitSec}秒`));
+    if (room.openingExchangeSec && room.openingExchangeSec !== DEFAULT_OPENING_EXCHANGE_SEC) chips.push(statusChip(`换牌 ${room.openingExchangeSec}秒`));
+    if (game?.scoring) chips.push(statusChip(`累计积分 ${game.scoring.total ?? game.scoring.stake}`));
+  } else if (game) {
+    chips.push(statusChip("进行中", { primary: true }));
+  } else {
+    chips.push(statusChip("对局入口"));
+    chips.push(statusChip("待开始"));
   }
-  const humanCount = room.players.filter((p) => !p.bot).length;
-  const readyPlayers = room.players.filter((p) => !p.bot && p.readyToStart).length;
+  // 对局相关的标签只在真的有对局时出现：房间大厅（还没开局）里「出牌机会 0 / 生成物 0」纯属噪声。
+  if (game) {
+    chips.push(statusChip(`当前：${active ? renderPlayerName(active) : "无"}`, { primary: true }));
+    chips.push(statusChip(`出牌机会：${game.actionPoints}`, { primary: true }));
+    chips.push(statusChip(`牌库：${game.zones.drawPile.length}`, { primary: true }));
+    chips.push(statusChip(`生成物：${game.zones.products.length}`));
+    if (game.pendingDraw) chips.push(statusChip(`待拿牌：${game.pendingDraw.remaining}`));
+  }
+  return `<div class="game-status">${chips.join("")}</div>`;
+}
+
+/** 联机房间里「真人 / 已确认」两个计数的唯一来源：状态标签和按钮组都要用，别各算一遍。 */
+function roomLobbyCounts(): { humanCount: number; readyPlayers: number } {
+  if (!room) return { humanCount: 0, readyPlayers: 0 };
+  return {
+    humanCount: room.players.filter((player) => !player.bot).length,
+    readyPlayers: room.players.filter((player) => !player.bot && player.readyToStart).length,
+  };
+}
+
+/**
+ * 顶栏右侧的按钮组：原来贴在那条状态栏右端的按钮（退出 / 查看规则设置 / AI 建议 / 导出日志 /
+ * 房间管理 / 确认开始）整组并进 .top-actions，和「设置」「账号」并排。
+ * 所有 data-act 原样保留：bind() 每次渲染后按选择器重新绑定，所以按钮换了位置照样能点。
+ */
+function renderGameActions(): string {
+  if (!room) {
+    if (!game) return "";
+    const buttons = [`<button class="player-kick room-exit" data-act="leave-room">退出</button>`];
+    if (isCustomGame(game)) buttons.push(`<button class="btn" data-act="view-room-rules">查看规则设置</button>`);
+    buttons.push(renderAdvancedAiButton());
+    if (game.status === "ended") buttons.push(`<button class="btn" data-act="export-game-log">导出日志</button>`);
+    return buttons.join("");
+  }
+  const { humanCount } = roomLobbyCounts();
   const canConfirm = room.players.length === room.capacity && room.players.length >= 2 && (room.status === "lobby" || room.status === "ended");
   const selfReady = Boolean(room.players.find((p) => p.id === selfId)?.readyToStart);
   const customRulesLocallyReady = room.rulesetMode !== "custom"
     || Boolean(room.customRulesHash && preparedCustomRulesHashes.has(room.customRulesHash));
-  const active = game ? activeSeat() : undefined;
   const duelRematchBlocked = Boolean(room.duelMode && room.status === "ended" && !room.duelKeepAvailable);
   const startButtonLabel =
     room.status === "playing" || room.status === "opening-exchange"
@@ -2051,54 +2176,21 @@ function renderRoomPanel(): string {
           ? "再来一局"
           : "确认开始";
   const startButtonEnabled = canConfirm && customRulesLocallyReady && !selfReady && !duelRematchBlocked;
-  const roomPresetId = room.rulesetMode === "custom" ? room.customPresetId : undefined;
-  const roomPresetLabel = roomPresetId
-    ? `预设 ${enabledCustomPresets.find((preset) => preset.id === roomPresetId)?.displayName ?? roomPresetId}`
-    : "";
   // 房主、或房里只剩自己一个真人：按钮语义变成「解散房间」——服务端会把房间整个删掉并释放房间码。
   // 其余玩家在大厅里是「退出房间」；对局进行中仍按既有策略拦住（bind 里 leave-room 有同一道守卫）。
   const canDisband = Boolean(currentUser && (currentUser.id === room.creatorAccountId || humanCount <= 1));
   const leaveHint = !canDisband && isOnlineGameRunning() ? "对局进行中，无法退出房间" : "";
-  return `
-    <section class="room-panel panel">
-      <div>
-        <div class="section-title"><span>联机房间</span><span>${room.status === "opening-exchange" ? "换牌中" : room.status === "playing" ? "进行中" : room.status === "ended" ? "已结束" : "等待中"}</span></div>
-        <div class="room-identity-row">
-          <strong class="room-code ${(room.codeKind === "reserved" || room.roomCodeKind === "reserved" || room.isReservedRoomCode) ? "reserved-room-code" : ""}">${room.code}</strong>
-          ${room.rulesetMode === "custom" ? `<span class="duel-badge custom-mode-badge">自定义模式</span>` : ""}
-          ${roomPresetLabel ? `<span class="duel-badge custom-preset-badge">${escapeHtml(roomPresetLabel)}</span>` : ""}
-          ${room.duelMode ? `<span class="duel-badge">决斗模式</span>` : ""}
-          ${isCardWarRoom(room) ? `<span class="duel-badge card-war-badge">算牌大战</span>` : ""}
-        </div>
-        <div class="room-stats">
-          <span>真人 ${humanCount}</span>
-          <span>底注 ${room.baseBet ?? 5}</span>
-          ${room.rulesetMode === "custom" ? `<span>初始手牌 ${room.initialHandSize ?? "由规则决定"}</span>` : room.initialHandSize ? `<span>初始手牌 ${room.initialHandSize}</span>` : ""}
-          ${room.rulesetMode === "custom" ? `<span>规则 ${customRulesLocallyReady ? "已缓存" : "下载中"}</span>` : ""}
-          <span>出牌 ${room.turnTimeLimitSec ?? DEFAULT_TURN_TIME_LIMIT_SEC}秒</span>
-          <span>换牌 ${room.openingExchangeSec ?? DEFAULT_OPENING_EXCHANGE_SEC}秒</span>
-          ${game?.scoring ? `<span>累计积分 ${game.scoring.total ?? game.scoring.stake}</span>` : ""}
-          <span>确认 ${readyPlayers}/${humanCount}</span>
-          <span>席位 ${room.players.length}/${room.capacity}</span>
-          <span>当前：${active ? renderPlayerName(active) : "无"}</span>
-          <span>出牌机会：${game?.actionPoints ?? 0}</span>
-          <span>牌库：${game?.zones.drawPile.length ?? totalCards()}</span>
-          ${game?.pendingDraw ? `<span>待拿牌：${game.pendingDraw.remaining}</span>` : ""}
-        </div>
-      </div>
-      <div class="top-actions">
-        <button class="btn danger room-exit" data-act="${canDisband ? "disband-room" : "leave-room"}"${leaveHint ? ` disabled title="${leaveHint}"` : ""}>${canDisband ? "解散房间" : "退出房间"}</button>
-        ${renderRefreshButton()}
-        <button class="btn" data-act="copy-room-link">复制链接</button>
-        ${room.rulesetMode === "custom" ? `<button class="btn" data-act="view-room-rules">查看房间设置</button>` : ""}
-        ${room.duelMode || room.rulesetMode === "custom" ? "" : `<button class="btn" data-act="add-online-bot" ${currentUser && (room.status === "lobby" || room.status === "ended") && room.players.length < room.capacity ? "" : "disabled"}>添加机器人</button>`}
-        ${currentUser?.id === room.creatorAccountId && !room.duelMode ? `<button class="btn room-edit-trigger" data-act="edit-room">编辑房间</button>` : ""}
-        ${renderAdvancedAiButton()}
-        ${game?.status === "ended" ? `<button class="btn" data-act="export-game-log">导出日志</button>` : ""}
-        ${duelRematchBlocked ? `<span class="muted">房主当前没有决斗额度，无法再来一局</span>` : `<button class="btn primary" data-act="start-online" ${startButtonEnabled ? "" : "disabled"}>${startButtonLabel}</button>`}
-      </div>
-    </section>
-  `;
+  return [
+    `<button class="btn danger room-exit" data-act="${canDisband ? "disband-room" : "leave-room"}"${leaveHint ? ` disabled title="${leaveHint}"` : ""}>${canDisband ? "解散房间" : "退出房间"}</button>`,
+    renderRefreshButton(),
+    `<button class="btn" data-act="copy-room-link">复制链接</button>`,
+    room.rulesetMode === "custom" ? `<button class="btn" data-act="view-room-rules">查看房间设置</button>` : "",
+    room.duelMode || room.rulesetMode === "custom" ? "" : `<button class="btn" data-act="add-online-bot" ${currentUser && (room.status === "lobby" || room.status === "ended") && room.players.length < room.capacity ? "" : "disabled"}>添加机器人</button>`,
+    currentUser?.id === room.creatorAccountId && !room.duelMode ? `<button class="btn room-edit-trigger" data-act="edit-room">编辑房间</button>` : "",
+    renderAdvancedAiButton(),
+    game?.status === "ended" ? `<button class="btn" data-act="export-game-log">导出日志</button>` : "",
+    duelRematchBlocked ? `<span class="muted">房主当前没有决斗额度，无法再来一局</span>` : `<button class="btn primary" data-act="start-online" ${startButtonEnabled ? "" : "disabled"}>${startButtonLabel}</button>`,
+  ].join("");
 }
 
 function renderRefreshButton(): string {
@@ -2140,20 +2232,8 @@ function renderHandbar(): string {
   const player = game ? visibleSeat() : undefined;
   const terminal = game?.status === "ended";
   const hideHand = Boolean(player?.bot && !terminal);
-  const actions =
-    game && game.status === "playing" && player && player.id === activeSeat()?.id && !hideHand
-      ? actionsForDisplay(
-        player.id,
-        actionsForPlayer(player.id).filter(
-          (a) =>
-            !isDrawResponse(a) &&
-            (game?.pendingDraw ||
-              selectedCard === "all" ||
-              actionMatchesCard(a, selectedCard) ||
-              isAdvancedAiSuggestedAction(a, player.id)),
-        ),
-      )
-      : [];
+  // 合法操作栏整块下线（待重新设计）：actionsForDisplay / actionsForPlayer / describeAction /
+  // legalActionHeading / bind() 里的 [data-action-index] 绑定都还在，重新设计时把那个面板接回来即可。
   const handCards = hideHand ? Array(player?.hand.length ?? 0).fill("__hidden__") : player?.hand ?? [];
   const animatedDrawCount = player && isLandingAnimating(player.id) ? animatedDrawCounts.get(player.id) ?? 0 : 0;
   const stackGroups = !hideHand && player && (game?.status === "playing" || game?.status === "ended") ? buildHandDisplayGroups(player.hand) : undefined;
@@ -2171,17 +2251,6 @@ function renderHandbar(): string {
       ? stackGroups.map((group) => renderHandStack(group, animatedDrawCount, player!.hand.length)).join("")
       : handCards.map((card, index) => renderCard(card, !hideHand, index >= handCards.length - animatedDrawCount ? "dealing-card" : "", index)).join("")}
           </div>
-        </div>
-        <div class="actions">
-          <div class="section-title"><span>${terminal ? "终局信息" : legalActionHeading(player?.id)}</span><span>${terminal ? "" : actions.length}</span></div>
-          ${terminal
-      ? `<div class="muted">本局已结束，点击左侧任意席位查看该玩家的手牌。</div>`
-      : hideHand
-        ? `<div class="muted">机器人的手牌已隐藏。</div>`
-        : game?.pendingDraw && player?.id === activeSeat()?.id
-          ? `<div class="muted">请在弹窗中处理拿牌。</div>`
-          : actions.map((action, index) => `<button class="action-btn ${isAdvancedAiSuggestedAction(action, player?.id) ? "ai-recommended" : ""}" data-action-index="${index}">${isAdvancedAiSuggestedAction(action, player?.id) ? "<strong>AI 建议</strong>" : ""}${describeAction(action)}</button>`).join("")
-    }
         </div>
       </div>
     </footer>`;
