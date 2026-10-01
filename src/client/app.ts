@@ -846,6 +846,11 @@ type DrawAnimation = {
   startedAt: number;
   duration: number;
 };
+// 飞牌动画的终点：不再用写死的偏移，改成在 DOM 落地后量真实矩形再回填给 @keyframes drawCardFly。
+// 每一张 .draw-fx-card 都挂一个 data-deal-key，渲染时记下「哪个 key 飞哪个席位」，量完照着 key 回填；
+// 渲染与量取不在同一拍（renderDrawAnimations 是在 app.innerHTML 之前拼字符串的），所以要这张映射表。
+type DealFlyMeasurement = { seatId: string; count: number; opening: boolean };
+type DealTargetPoint = { x: number; y: number };
 type InteractiveElementState = {
   key: string;
   value?: string;
@@ -956,6 +961,9 @@ let animatedDrawCounts = new Map<string, number>();
 let dealAnimationUntil = 0;
 let landingAnimationUntil = 0;
 let drawAnimations: DrawAnimation[] = [];
+// 飞牌动画的定位状态：见 DealFlyMeasurement / applyDrawAnimationTargets。
+let dealFlyMeasurements = new Map<string, DealFlyMeasurement>();
+let dealFlyKeySeq = 0;
 let pollInterval = 0;
 let reconcileInterval = 0;
 let heartbeatInterval = 0;
@@ -984,6 +992,14 @@ const winMusicPrefetches = new Map<string, Promise<void>>();
 let storagePersistenceRequested = false;
 let openingExchangeTimer = 0;
 let cardClickTimer = 0;
+// 手牌悬浮操作窗（点手牌 → 该牌正上方弹窗）：状态只有下面这几个模块级变量，
+// 开窗/关窗都走局部 DOM（renderCardActionFlyout / positionCardActionFlyout / hideCardActionFlyout），
+// 刻意不调用 render()——点一张牌就全量重建整块 #app 会明显卡顿。
+// 代价是 #app 的 innerHTML 一换窗子就没了，所以 render() 里在赋值之后把这几个变量一并清空（见 app.innerHTML 那几行）。
+let cardActionFlyout: { card: CardId; index: number } | null = null;
+let cardActionFlyoutAnchor: HTMLElement | null = null;
+let cardActionFlyoutActions: RulesetAction[] = [];
+let cardActionFlyoutBound = false;
 let activeTouchCardDescriptionKey = "";
 let modalActionSubmissionTimer = 0;
 let openingSelectionKey = "";
@@ -1580,6 +1596,8 @@ function render(): void {
   const passwordLayer = renderPasswordConfirm();
   const exchangeLayer = renderOpeningExchangeModal();
   const winLayer = renderWinModal();
+  // 手牌悬浮操作窗的空壳挂在 .shell 里（.layout 的兄弟位）：.card-grid 是 overflow:auto、
+  // .layout 是 overflow:hidden，放进任何一层里面都会被裁掉。壳里是空的，点牌时再局部填充（见 renderCardActionFlyout）。
   app.innerHTML = `
     <div class="shell ${requestNotice ? "has-request-notice" : ""}${startScreen ? " start-screen" : ""}">
       ${startScreen
@@ -1628,6 +1646,7 @@ function render(): void {
       </main>
       ${renderDrawAnimations()}
       <div id="cardDescriptionBubble" class="card-description-bubble" role="tooltip" hidden></div>
+      <div id="cardActionFlyout" class="card-action-flyout" role="dialog" aria-label="卡牌的合法操作" hidden></div>
       ${modalLayer}
       ${dialogLayer}
       ${passwordLayer}
@@ -1635,6 +1654,11 @@ function render(): void {
       ${winLayer}
     </div>
   `;
+  // #app 的 innerHTML 刚被整块换掉，上一步弹出的悬浮操作窗已经随旧 DOM 一起消失：状态跟着清空。
+  // 不清的话下一轮点击会把「点的是不是同一张牌」判错，而 anchor 也早就脱离文档了。
+  cardActionFlyout = null;
+  cardActionFlyoutAnchor = null;
+  cardActionFlyoutActions = [];
   // 弹窗入场动画只在「浮层层级比上一次渲染更高」的那一次渲染播放，之后的重渲染不重放。
   // 层级 = 这次真正输出到页面上的浮层数（modal / dialog / 确认密码 / 开局换牌 / 终局，见 modalDepth）。
   // 用「更高」而不是「不相等」：关掉子弹窗时层级要降一级，用不等号会让下面那层父弹窗把入场动画
@@ -1653,6 +1677,8 @@ function render(): void {
   bind();
   renderTimer();
   restoreInteractionSnapshot(interaction);
+  // 飞牌动画的终点：新 DOM 已经落地（含滚动位置恢复）才量 DOM 矩形，量完把 --dx/--dy 写回飞牌。
+  applyDrawAnimationTargets();
   maybeRunBot();
   scheduleAdvancedAiCalculation();
 }
@@ -1992,11 +2018,11 @@ function renderSeatCard(seat: SeatView, index: number, options: { self?: boolean
   // 终局仍然带 data-seat-id：点它能看自己的手牌（renderHandbar 的终局提示依赖这个）。
   if (options.self) {
     const selfTools = `${canCancelAutoplay ? `<button class="player-kick" data-act="cancel-autoplay">取消托管</button>` : ""}${canLeave ? `<button class="player-kick" data-act="leave-room" aria-label="退出房间">退出</button>` : ""}`;
-    return `<div class="player self-player compact ${active ? "active" : ""} ${terminal ? "selectable" : ""} ${isSeatAnimating(seat.id) ? "drawing" : ""}" ${terminal ? `data-seat-id="${escapeAttr(seat.id)}"` : ""}>
+    return `<div class="player self-player compact ${active ? "active" : ""} ${terminal ? "selectable" : ""} ${isSeatAnimating(seat.id) ? "drawing" : ""}" data-seat="${escapeAttr(seat.id)}" ${terminal ? `data-seat-id="${escapeAttr(seat.id)}"` : ""}>
                     ${renderPlayerName(seat)}<span class="self-meta">手牌 ${handCount}${points}</span>${selfTools ? `<span class="player-tools">${selfTools}</span>` : ""}
                   </div>`;
   }
-  return `<div class="player ${active ? "active" : ""} ${terminal ? "selectable" : ""} ${isSeatAnimating(seat.id) ? "drawing" : ""}" ${terminal ? `data-seat-id="${escapeAttr(seat.id)}"` : ""}>
+  return `<div class="player ${active ? "active" : ""} ${terminal ? "selectable" : ""} ${isSeatAnimating(seat.id) ? "drawing" : ""}" data-seat="${escapeAttr(seat.id)}" ${terminal ? `data-seat-id="${escapeAttr(seat.id)}"` : ""}>
                     <div class="player-main">${renderPlayerName(seat)}${roleBadges ? `<span class="${roleBadgeClass}">${roleBadges}</span>` : ""}${subtitle ? `<br><small class="user-title">${escapeHtml(subtitle)}</small>` : ""}<br><small>${status}${ready} · 手牌 ${handCount}${points}${seat.forcedAutoplay ? " · 托管" : ""}</small></div>
                     <div class="player-tools"><span class="status-dot ${seat.online || automatic ? "online" : ""}"></span>${canCancelAutoplay ? `<button class="player-kick" data-act="cancel-autoplay">取消托管</button>` : ""}${canKick ? `<button class="player-kick" data-act="kick-room-player" data-player-id="${escapeAttr(seat.id)}" aria-label="移出 ${escapeAttr(seat.nickname)}">移出</button>` : ""}${canLeave ? `<button class="player-kick" data-act="leave-room" aria-label="退出房间">退出</button>` : ""}</div>
                   </div>`;
@@ -2277,6 +2303,9 @@ function renderCard(card: CardId | CardInstance, clickable = false, extraClass =
   const visual = cardVisual(id);
   const selected = clickable && selectedHandIndex === handIndex ? "selected" : "";
   const sameHint = clickable && selectedHandIndex !== null && selectedHandIndex !== handIndex && selectedCard === id ? "same-card-hint" : "";
+  // AI 建议指向这张牌时加一圈紫色边缘。只在手牌路径求值：solution 区、生成物、悬浮窗预览那几处
+  // 调用都不传 handIndex，自动跳过（见 renderCard 的各个调用点）。
+  const aiSuggested = clickable && handIndex !== undefined ? aiSuggestedCardClass(id) : "";
   const indexAttr = handIndex !== undefined ? ` data-card-index="${handIndex}"` : "";
   const instance = typeof card === "string" ? undefined : card;
   const descriptionKey = handIndex !== undefined ? `hand:${handIndex}` : instance?.instanceId ?? `card:${id}`;
@@ -2294,7 +2323,7 @@ function renderCard(card: CardId | CardInstance, clickable = false, extraClass =
     : "";
   const life = instance?.counters.life;
   const lifeBadge = badge ?? (typeof life === "number" ? `寿命 ${life}` : undefined);
-  return `<button class="card ${visual.cls} ${selected} ${sameHint} ${extraClass} ${lifeBadge ? "has-uranium-life" : ""} ${description ? "has-description" : ""}"${cardVisualStyle(visual)} ${interactionAttrs}${descriptionAttrs}>
+  return `<button class="card ${visual.cls} ${selected} ${sameHint} ${extraClass} ${aiSuggested} ${lifeBadge ? "has-uranium-life" : ""} ${description ? "has-description" : ""}"${cardVisualStyle(visual)} ${interactionAttrs}${descriptionAttrs}>
     <span class="card-badges">
     ${lifeBadge ? `<span class="card-badge uranium-life" title="还能触发 ${escapeAttr(lifeBadge.replace(/\D/g, ""))} 次辐射摸牌">${escapeHtml(lifeBadge)}</span>` : ""}
     ${markBadge}
@@ -2345,7 +2374,8 @@ function renderHandStack(group: HandDisplayGroup, animatedDrawCount: number, han
     : "";
   const description = customCardDescription(card);
   const descriptionAttrs = cardDescriptionAttributes(card, `hand:${toggleIndex}`);
-  return `<button class="card-stack ${visual.cls} ${description ? "has-description" : ""}" style="--stack-size:${count}${visual.topColor ? `;--card-top-color:${visual.topColor}` : ""}" data-card="${escapeAttr(card)}" data-card-index="${toggleIndex}"${descriptionAttrs}>
+  // 整摞加紫框（已确认的方案：框住整叠、含后面错开的几张，而不是只标最上面那张）。
+  return `<button class="card-stack ${visual.cls} ${description ? "has-description" : ""} ${aiSuggestedCardClass(card)}" style="--stack-size:${count}${visual.topColor ? `;--card-top-color:${visual.topColor}` : ""}" data-card="${escapeAttr(card)}" data-card-index="${toggleIndex}"${descriptionAttrs}>
     ${layers}
     <span class="card ${visual.cls} ${selected} ${dealing} stack-top">
       <span class="card-badges">${markBadge}</span>
@@ -2356,10 +2386,67 @@ function renderHandStack(group: HandDisplayGroup, animatedDrawCount: number, han
   </button>`;
 }
 
+// 飞牌动画的起止坐标都以视口为基准（.draw-fx-layer 是 position:fixed; inset:0，
+// 所以层内卡片的 dx/dy 就是纯视口位移）：
+//   起点 = 视口正中央（window.innerWidth / 2, window.innerHeight / 2，见 flyOriginPoint）；
+//   终点 = 对应玩家头像卡片的正中心，现量 getBoundingClientRect()。
+// 原来那套写死的 calc(50vw - 250px) / index*74（老布局时代）已经全部删掉。
+function rectCenter(rect: { left: number; top: number; width: number; height: number }): DealTargetPoint {
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+function pointOf(element: Element | null | undefined): DealTargetPoint | undefined {
+  return element ? rectCenter(element.getBoundingClientRect()) : undefined;
+}
+
+/** 飞牌动画的起点：屏幕正中央，不依赖任何 DOM 或写死坐标（窗口尺寸变了也跟着变）。 */
+function flyOriginPoint(): DealTargetPoint {
+  return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+}
+
+/**
+ * 发牌动画的终点：一律现量「玩家头像卡片」的正中心，不用任何写死坐标或缓存。
+ * 新布局下头像卡分两处，按 data-seat 认人：
+ *   - 自己的头像 → .self-seat>.player[data-seat]（手牌区正上方居中那条紧凑卡）；
+ *   - 对手 / 其它席位 → .opponents-row>.player[data-seat]（顶部横排）。
+ * 两者都量不到（起始界面等）才退到 .handbar、再退 .board，只为不让动画落空。
+ */
+function dealAnimationTargetPoint(seatId: string): DealTargetPoint | undefined {
+  const seatCard = document.querySelector<HTMLElement>(
+    `.self-seat>.player[data-seat="${CSS.escape(seatId)}"], .opponents-row>.player[data-seat="${CSS.escape(seatId)}"]`,
+  );
+  return pointOf(seatCard) ?? pointOf(document.querySelector(".handbar")) ?? pointOf(document.querySelector(".board"));
+}
+
+/**
+ * 量取终点并回填 CSS 变量。必须在 app.innerHTML 之后、布局算完之后调用（render() 末尾），
+ * 因为 renderDrawAnimations 是在拼模板字符串时就跑完了，那一刻新 DOM 还没挂上。
+ * 回填 --dx/--dy 会重新触发 drawCardFly 的插值，所以量到的新坐标立刻生效。
+ */
+function applyDrawAnimationTargets(): void {
+  const cards = document.querySelectorAll<HTMLElement>(".draw-fx-layer .draw-fx-card");
+  if (cards.length === 0) return;
+  const origin = flyOriginPoint();
+  const layerRect = document.querySelector(".draw-fx-layer")?.getBoundingClientRect();
+  const offsetX = layerRect?.left ?? 0;
+  const offsetY = layerRect?.top ?? 0;
+  cards.forEach((card) => {
+    const measurement = dealFlyMeasurements.get(card.dataset.dealKey ?? "");
+    if (!measurement) return;
+    const target = dealAnimationTargetPoint(measurement.seatId);
+    if (!target) return;
+    card.style.setProperty("--dx", `${(target.x - origin.x - offsetX).toFixed(1)}px`);
+    card.style.setProperty("--dy", `${(target.y - origin.y - offsetY).toFixed(1)}px`);
+  });
+}
+
 function renderDrawAnimations(): string {
   const now = Date.now();
   drawAnimations = drawAnimations.filter((animation) => now - animation.startedAt < animation.duration + 120);
   if (drawAnimations.length === 0) return "";
+  // 终点每帧在 render() 末尾重新量（见 applyDrawAnimationTargets），这里只重置「哪个 key 飞哪个席位」。
+  dealFlyMeasurements = new Map();
+  const keySeq = ++dealFlyKeySeq;
   return `
     <div class="draw-fx-layer" aria-hidden="true">
       ${drawAnimations
@@ -2369,11 +2456,14 @@ function renderDrawAnimations(): string {
         const elapsed = now - animation.startedAt;
         const label = animation.opening ? "发牌" : `摸牌 x${animation.count}`;
         return Array.from({ length: visibleCount }, (_, index) => {
-          const target = drawAnimationTarget(animation.seatId);
+          const dealKey = `${keySeq}:${animation.id}:${index}`;
+          dealFlyMeasurements.set(dealKey, { seatId: animation.seatId, count: animation.count, opening: animation.opening });
           const delay = Math.min(index * 70, 360);
           const duration = Math.max(640, animation.duration - delay);
           const playheadDelay = Math.min(delay - elapsed, delay);
-          return `<div class="draw-fx-card ${animation.opening ? "opening" : ""}" style="--i:${index}; --dx:${target.dx}; --dy:${target.dy}; animation-delay:${playheadDelay}ms; animation-duration:${duration}ms;">
+          // 这里不写 --dx/--dy：终点由 applyDrawAnimationTargets 在 DOM 落地后量取回填，
+          // 量之前走 @keyframes 里的 var(--dx, 0px) 默认值，而前 16% 动画本来就是 opacity:0，看不见起点。
+          return `<div class="draw-fx-card ${animation.opening ? "opening" : ""}" data-deal-key="${escapeAttr(dealKey)}" style="--i:${index}; animation-delay:${playheadDelay}ms; animation-duration:${duration}ms;">
               <span>${label}</span>
               <small>${escapeHtml(player?.nickname ?? "")}</small>
             </div>`;
@@ -2382,13 +2472,6 @@ function renderDrawAnimations(): string {
       .join("")}
     </div>
   `;
-}
-
-function drawAnimationTarget(seatId: string): { dx: string; dy: string } {
-  const visible = visibleSeat();
-  if (visible?.id === seatId) return { dx: "calc(50vw - 250px)", dy: "calc(100vh - 410px)" };
-  const index = game?.players.findIndex((seat) => seat.id === seatId) ?? 0;
-  return { dx: "calc(-120px)", dy: `${-164 + index * 74}px` };
 }
 
 function renderProduct(product: ClientGame["zones"]["products"][number]): string {
@@ -4535,6 +4618,7 @@ function onlineGameSettlesPoints(state: GameState): boolean {
 
 function bind(): void {
   bindCardDescriptionBubbles();
+  bindCardActionFlyout();
   // 主题色取色器 / 十六进制输入框：边改边写 :root 的 CSS 变量，不重渲染（否则输入框会失焦）。
   document.querySelectorAll<HTMLInputElement>("[data-theme-color]").forEach((el) => {
     el.addEventListener("input", () => {
@@ -4577,6 +4661,10 @@ function bind(): void {
       if (cardClickTimer) window.clearTimeout(cardClickTimer);
       cardClickTimer = window.setTimeout(() => {
         cardClickTimer = 0;
+        // 单击优先弹悬浮操作窗（触屏点按走的是同一个 click）。窗子接管了这次点击就直接 return，
+        // 不再走下面的「选中 + render()」——那正是要避开的全量重建。
+        // 220ms 防抖沿用原样，只为给双击让路：不防抖的话双击会先闪一下窗子再跳出操作弹窗。
+        if (el.isConnected && card !== "all" && toggleCardActionFlyout(el, card)) return;
         if (card === "all") {
           selectedCard = "all";
           selectedHandIndex = null;
@@ -7004,6 +7092,8 @@ function handleCardDoubleClick(card: CardId | "all", index?: number): void {
   if (!game || card === "all") return;
   const seat = visibleSeat();
   if (!seat || seat.bot || seat.id !== activeSeat()?.id) return;
+  // 双击走的是原来的「只有一条操作就直接出牌 / 多条开操作弹窗」，顺手把可能还开着的悬浮窗收掉。
+  hideCardActionFlyout();
   if (Number.isInteger(index)) {
     selectedCard = card;
     selectedHandIndex = index ?? null;
@@ -7024,6 +7114,141 @@ function handleCardDoubleClick(card: CardId | "all", index?: number): void {
     actions: actionsForDisplay(seat.id, actions),
   };
   render();
+}
+
+/**
+ * 手牌悬浮操作窗（点手牌 → 在该牌正上方弹出的那个小窗）。
+ * 数据源完全复用现有那套合法操作枚举，没有另写一份：
+ *   actionsForPlayer()     自定义局 enumerateRulesetActions / 经典局 enumerateActions（见函数本体）
+ *   actionMatchesCard()    只筛出「属于这一张牌」的操作，和 handleCardDoubleClick 用的是同一个
+ *   actionsForDisplay()    经典局按 AI 建议排序，保持一致
+ *   describeAction() / isAdvancedAiSuggestedAction()  文案与「AI 建议」角标
+ *   submit()               执行，等同出牌（联机走消息、本地走 applyRulesetAction）
+ * 开窗/关窗/换牌都只动上面那几个模块级变量 + 局部 DOM，绝不调用 render()。
+ */
+function toggleCardActionFlyout(anchor: HTMLElement, card: CardId): boolean {
+  if (!game) return false;
+  const index = Number(anchor.dataset.cardIndex);
+  const resolvedIndex = Number.isInteger(index) ? index : -1;
+  // 再点同一张牌 = 关闭（同名多张牌时靠 handIndex 区分）。
+  if (cardActionFlyout?.card === card && cardActionFlyout.index === resolvedIndex) {
+    hideCardActionFlyout();
+    return true;
+  }
+  cardActionFlyout = { card, index: resolvedIndex };
+  cardActionFlyoutAnchor = anchor;
+  renderCardActionFlyout();
+  return true;
+}
+
+function cardActionFlyoutSeat() {
+  const seat = visibleSeat();
+  if (!seat || seat.bot) return undefined;
+  // 只有轮到自己才枚举：local 模式下 submit() 用的是 activeSeat()，
+  // 给「看牌席位」显示按钮会把这手牌提交到别人身上。
+  return seat.id === activeSeat()?.id ? seat : undefined;
+}
+
+/** 局部重绘悬浮窗内容（不经过 render()）。 */
+function renderCardActionFlyout(): void {
+  const flyout = document.querySelector<HTMLElement>("#cardActionFlyout");
+  if (!flyout || !cardActionFlyout || !game) return;
+  const { card, index } = cardActionFlyout;
+  const seat = cardActionFlyoutSeat();
+  const owned = seat ? actionsForPlayer(seat.id).filter((action) => actionMatchesCard(action, card)) : [];
+  cardActionFlyoutActions = seat ? actionsForDisplay(seat.id, owned) : [];
+  const ownerId = seat?.id;
+  // 自定义模式的手牌元素是 CardInstance（带印记 / 寿命），按手牌下标取回原件，
+  // 预览才能和牌桌上那张完全一致；取不到就退回纯 CardId。
+  const entry = index >= 0 ? seat?.hand[index] : undefined;
+  const preview = entry && cardIdOf(entry) === card ? entry : card;
+  flyout.innerHTML = `
+    <div class="flyout-preview">${renderCard(preview, false, "flyout-preview-card")}</div>
+    <div class="flyout-body">
+      <div class="flyout-head">${formulaHtml(card)}<strong>${escapeHtml(cardDisplayName(card))}</strong></div>
+      <div class="flyout-actions">
+        ${cardActionFlyoutActions.length
+      ? cardActionFlyoutActions
+        .map(
+          (action, actionIndex) =>
+            `<button class="action-btn ${isAdvancedAiSuggestedAction(action, ownerId) ? "ai-recommended" : ""}" data-flyout-action-index="${actionIndex}">${isAdvancedAiSuggestedAction(action, ownerId) ? "<strong>AI 建议</strong>" : ""}${describeAction(action)}</button>`,
+        )
+        .join("")
+      : `<p class="flyout-empty">当前没有合法操作</p>`}
+      </div>
+    </div>`;
+  flyout.hidden = false;
+  positionCardActionFlyout();
+}
+
+/** 贴着被点的那张牌摆位：水平以牌心对齐，靠边就夹住不溢出；上方放不下就翻到牌的下方。 */
+function positionCardActionFlyout(): void {
+  const flyout = document.querySelector<HTMLElement>("#cardActionFlyout");
+  const anchor = cardActionFlyoutAnchor;
+  if (!flyout || flyout.hidden || !anchor || !anchor.isConnected) return;
+  const anchorRect = anchor.getBoundingClientRect();
+  const flyoutRect = flyout.getBoundingClientRect();
+  const margin = 10;
+  const gap = 10;
+  const centerX = anchorRect.left + anchorRect.width / 2;
+  const left = Math.min(
+    window.innerWidth - flyoutRect.width - margin,
+    Math.max(margin, centerX - flyoutRect.width / 2),
+  );
+  const fitsAbove = anchorRect.top >= flyoutRect.height + gap + margin;
+  const vertical = fitsAbove ? anchorRect.top - flyoutRect.height - gap : anchorRect.bottom + gap;
+  const top = Math.max(margin, Math.min(window.innerHeight - flyoutRect.height - margin, vertical));
+  // 绝对定位的包含块是初始包含块（#app / .shell / body 都没有 position），所以要带上页面滚动量。
+  flyout.style.left = `${Math.round(left + window.scrollX)}px`;
+  flyout.style.top = `${Math.round(top + window.scrollY)}px`;
+  flyout.classList.toggle("flip", !fitsAbove);
+  // 小尖角对准牌心；窗子被屏幕边缘夹紧时会偏，所以夹在窗内两侧各留 14px 的位置。
+  const arrowX = Math.min(flyoutRect.width - 14, Math.max(14, centerX - left));
+  flyout.style.setProperty("--arrow-x", `${Math.round(arrowX)}px`);
+}
+
+function hideCardActionFlyout(): void {
+  cardActionFlyout = null;
+  cardActionFlyoutAnchor = null;
+  cardActionFlyoutActions = [];
+  const flyout = document.querySelector<HTMLElement>("#cardActionFlyout");
+  if (!flyout) return;
+  flyout.hidden = true;
+  flyout.classList.remove("flip");
+  flyout.innerHTML = "";
+}
+
+function bindCardActionFlyout(): void {
+  // 容器是模板里的空壳，每次 render() 都是新节点，所以这条委托监听跟着 render 重绑不会重复。
+  const flyout = document.querySelector<HTMLElement>("#cardActionFlyout");
+  flyout?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-flyout-action-index]") : null;
+    if (!target || !cardActionFlyout) return;
+    const action = cardActionFlyoutActions[Number(target.dataset.flyoutActionIndex)];
+    if (!action) return;
+    // 先关窗再提交：submit() 在联机分支里不会走 render()，不先关的话窗子会留在原地。
+    hideCardActionFlyout();
+    void submit(action);
+  });
+  if (cardActionFlyoutBound) return;
+  cardActionFlyoutBound = true;
+  // 点窗外关闭。用 pointerdown（触屏等效）而不是 click，免得和牌自己的 click 抢先后。
+  // 再次点同一张牌放行给牌自己的 click（toggle 里已处理「再点一次关闭」），否则会先关后开、闪一下。
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (!cardActionFlyout) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("#cardActionFlyout")) return;
+      if (target && cardActionFlyoutAnchor && target.closest("[data-card]") === cardActionFlyoutAnchor) return;
+      hideCardActionFlyout();
+    },
+    true,
+  );
+  // 手牌区自己滚（.card-grid 是 overflow:auto）或视口尺寸变化后重新贴回那张牌。
+  // scroll 不冒泡，只能在捕获阶段听。
+  document.addEventListener("scroll", () => positionCardActionFlyout(), true);
+  window.addEventListener("resize", () => positionCardActionFlyout());
 }
 
 function renderTimer(): void {
@@ -7369,6 +7594,24 @@ function isAdvancedAiSuggestedAction(action: RulesetAction, playerId?: string): 
   if (isCustomLegalAction(action)) return false;
   const suggested = playerId ? currentAdvancedAiAction(playerId) : undefined;
   return Boolean(suggested && actionKey(suggested) === actionKey(action));
+}
+
+/**
+ * AI 建议要标成紫色的「牌」。
+ * 右侧合法操作栏下线、改成点牌弹悬浮窗之后，建议本身只体现在悬浮窗的操作按钮上；
+ * 这个函数只做「被推荐的那个操作指向哪张手牌」的反查，交给 renderCard / renderHandStack 加紫色边缘。
+ * 数据源和悬浮窗、弹窗完全一致：advancedAiDecisionPlayer() 决定给谁建议、
+ * currentAdvancedAiAction() 取已算好的建议（内部照旧校验 enabled / complete / gameId / revision / playerId）、
+ * actionMatchesCard() 做「操作 → 牌」的现成映射。不碰 Worker，也不重算任何东西。
+ * 建议不指向具体牌时（accept-draw 摸牌、opening-double 加倍之类）返回空串：
+ * 那种情况手牌不做任何标记，只在悬浮窗里用紫色按钮提示。
+ */
+function aiSuggestedCardClass(card: CardId): string {
+  const seat = advancedAiDecisionPlayer();
+  if (!seat) return "";
+  const suggested = currentAdvancedAiAction(seat.id);
+  if (!suggested) return "";
+  return actionMatchesCard(suggested, card) ? "ai-suggested" : "";
 }
 
 function currentAdvancedAiAction(playerId: string): ActionIntent | undefined {

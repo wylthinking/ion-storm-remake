@@ -764,7 +764,11 @@ button:disabled {
   outline-offset:0;
   outline:2px solid #9aa3aa;
 }
-.card.ai-opening-suggestion:not(.selected) {
+/* AI 建议的紫色边缘：开局换牌弹窗里的建议牌（.ai-opening-suggestion）和手牌上被推荐的那张
+   （.ai-suggested，由 app.ts 的 aiSuggestedCardClass 决定）共用同一套紫色，只在这里定义一次。
+   .card-stack 是整摞牌那个按钮（同名牌堆叠时框住整叠），它自己不会是 .selected，所以不加 :not。 */
+.card.ai-opening-suggestion:not(.selected),.card.ai-suggested:not(.selected),.card-stack.ai-suggested {
+  border-radius:8px;
   outline-offset:0;
   outline:2px solid #8b4cc7;
   box-shadow:0 0 0 3px #8b4cc729,0 8px 18px #20242a14;
@@ -815,10 +819,14 @@ button:disabled {
 .card.special {
   border-top:5px solid #c6972f;
 }
+/* 牌背：AI 手牌隐藏时（renderHandbar 的 hideHand → __hidden__ → renderCard 早退分支）唯一的牌背渲染点。
+   原来是一块 #20242a 的纯色底，现在换成图片。background-origin 默认是 padding-box、background-clip
+   默认是 border-box，所以背景会从 padding 边缘一直铺到边框下面，9px 8px 的内边距不会把图片内缩掉；
+   图片本身被 .card 的 border-radius:8px（见 .card 那条）裁掉圆角外的部分，不会溢出。
+   颜色值只是图片加载失败时的兜底。图片路径由 vite.config.ts 的 publicDir 指向 src/client/Public。 */
 .card.hidden {
   color:#0000;
-  background:#20242a;
-  border-top-color:#20242a;
+  background:#20242a url("/Card-back.png") center / cover no-repeat;
 }
 .card.custom-ion {
   border-top:5px solid var(--card-top-color,#b63e32);
@@ -887,6 +895,114 @@ button:disabled {
 }
 .card-description-bubble[hidden] {
   display:none;
+}
+/* 手牌悬浮操作窗（点手牌后在该牌正上方弹出）：空壳挂在 .shell 里（.layout 的兄弟位，
+   避开 .card-grid 的 overflow:auto 和 .layout 的 overflow:hidden），内容由 app.ts 的
+   renderCardActionFlyout() 局部填充——刻意不走 render() 全量重建。
+   定位是 position:absolute；包含块是初始包含块（#app/.shell/body 都没有 position），
+   所以 left/top 由 JS 按「视口坐标 + 滚动量」算好。z-index 26：飞牌层(24)之上、弹窗遮罩(30)之下。 */
+.card-action-flyout {
+  z-index:26;
+  color:#fff;
+  background:#20242a;
+  border:1px solid #20242a33;
+  border-radius:12px;
+  gap:10px;
+  width:max-content;
+  max-width:min(330px,100vw - 20px);
+  padding:10px;
+  display:flex;
+  position:absolute;
+  top:0;
+  left:0;
+  box-shadow:0 16px 38px #20242a52;
+}
+.card-action-flyout[hidden] {
+  display:none;
+}
+/* 放大预览：外面这个定尺容器兜住 transform 之后的视觉尺寸（transform 不参与布局，
+   容器得自己留出空位，否则窗子会算矮）。里面是 renderCard(card,false) 出的 disabled 按钮，
+   这里把 button:disabled 的 45% 透明度改回来，并让它不接指针事件。 */
+.card-action-flyout .flyout-preview {
+  flex:none;
+  place-items:center;
+  width:88px;
+  height:110px;
+  display:grid;
+}
+.card-action-flyout .flyout-preview-card {
+  cursor:default;
+  pointer-events:none;
+  opacity:1;
+  transform:scale(1.15);
+}
+.card-action-flyout .flyout-body {
+  flex-direction:column;
+  gap:8px;
+  min-width:0;
+  max-width:196px;
+  display:flex;
+}
+.card-action-flyout .flyout-head {
+  align-items:baseline;
+  gap:6px;
+  font-size:13px;
+  display:flex;
+}
+.card-action-flyout .flyout-head strong {
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  overflow:hidden;
+}
+/* 合法操作列表：按钮进窗后要反过来配色——.action-btn 本身是深底，压在同为深底的窗上会看不见。
+   .action-btn.ai-recommended 只设 order:-1，这里是 flex 列，AI 建议自然排到最上面。 */
+.card-action-flyout .flyout-actions {
+  flex-direction:column;
+  gap:6px;
+  max-height:min(46vh,300px);
+  display:flex;
+  overflow:hidden auto;
+}
+.card-action-flyout .flyout-actions .action-btn {
+  color:#fff;
+  background:#ffffff1a;
+  border:1px solid #ffffff29;
+  font-size:13px;
+}
+.card-action-flyout .flyout-actions .action-btn:hover,.card-action-flyout .flyout-actions .action-btn:focus-visible {
+  background:#ffffff2e;
+}
+/* AI 建议那条按钮在窗内必须保持紫色：上面那条（3 个类）会压过 .action-btn.ai-recommended（2 个类），
+   所以这里用 3 个类 + .ai-recommended（4 个类）把紫色渐变提回来，和弹窗里的建议按钮保持一致。 */
+.card-action-flyout .flyout-actions .action-btn.ai-recommended {
+  color:#fff;
+  background:linear-gradient(135deg,#6d35a5,#8b4cc7);
+  border-color:#5a278d;
+}
+.card-action-flyout .flyout-actions .action-btn.ai-recommended:hover,
+.card-action-flyout .flyout-actions .action-btn.ai-recommended:focus-visible {
+  background:linear-gradient(135deg,#7b3fb8,#9a5ad6);
+}
+.card-action-flyout .flyout-empty {
+  color:#ffffffa8;
+  margin:0;
+  font-size:13px;
+}
+/* 指向被点那张牌的小尖角：--arrow-x 由 JS 写成「窗内偏移」。
+   默认在底边（窗子浮在牌上方），上方放不下翻到牌下方时（.flip）挪到顶边。 */
+.card-action-flyout:before {
+  content:"";
+  background:#20242a;
+  width:10px;
+  height:10px;
+  position:absolute;
+  bottom:-5px;
+  left:var(--arrow-x,50%);
+  transform:translateX(-50%) rotate(45deg);
+}
+.card-action-flyout.flip:before {
+  top:-5px;
+  bottom:auto;
 }
 .card.has-description[aria-disabled=true],.card-stack.has-description {
   cursor:help;
@@ -1185,10 +1301,19 @@ button:disabled {
   inset:0;
   overflow:hidden;
 }
+/* 飞牌的起点：屏幕正中央。70px/92px 就是卡片的 border-box 尺寸（* { box-sizing:border-box }），
+   各减一半即让卡片中心压在视口中心上；这里的数字必须和 app.ts 的 flyOriginPoint()
+   （window.innerWidth / 2, window.innerHeight / 2）保持一致。
+   终点由 app.ts 的 applyDrawAnimationTargets() 量「玩家头像卡片」矩形后回填 --dx/--dy
+   （层是 position:fixed; inset:0，所以这两个变量就是纯视口位移）。 */
 .draw-fx-card {
   color:#fff;
   transform-origin:50%;
-  background:linear-gradient(145deg,#ffffff2e,#0000 42%),#20242a;
+  /* 动画里的牌背：与 .card.hidden 用同一张图（/Card-back.png，由 vite.config.ts 的 publicDir 指向
+     src/client/Public 提供）。center / cover = background-position:center + background-size:cover；
+     最上面那层淡黑斜向渐变只是给「发牌 / 摸牌 xN / 昵称」这行白字压一点底，避免牌背图偏亮时糊掉。
+     #20242a 是图片加载失败时的兜底色。border-radius 见下面那条，图片被圆角裁切、不会溢出。 */
+  background:linear-gradient(145deg,#00000047,#0000 46%),#20242a url("/Card-back.png") center / cover no-repeat;
   border:1px solid #ffffff6b;
   border-radius:8px;
   align-content:center;
@@ -1199,17 +1324,12 @@ button:disabled {
   animation:.92s cubic-bezier(.18,.82,.22,1) both drawCardFly;
   display:grid;
   position:fixed;
-  top:clamp(112px,43vh,330px);
-  left:clamp(86px,19vw,286px);
+  top:calc(50vh - 46px);
+  left:calc(50vw - 35px);
   box-shadow:0 18px 42px #20242a42;
 }
-.draw-fx-card:before {
-  content:"";
-  border:1px solid #ffffff5c;
-  border-radius:6px;
-  position:absolute;
-  inset:7px;
-}
+/* 原来这里有 .draw-fx-card:before（内缩 7px 的白色描边内框）。牌背换成整张图片后，
+   那条内框叠在图上像"画中画"，删掉；卡片的圆角和描边由 .draw-fx-card 自己给。 */
 .draw-fx-card span {
   z-index:1;
   font-size:14px;
@@ -1226,9 +1346,8 @@ button:disabled {
   position:relative;
   overflow:hidden;
 }
-.draw-fx-card.opening {
-  background:linear-gradient(145deg,#fff3,#0000 42%),#226b70;
-}
+/* 原来开局发牌（.opening）会把底色覆盖成青色 #226b70。牌背统一换成图片后这条删掉，
+   否则"开局发牌"那一批仍旧不是牌背图；开局与摸牌的区分继续由卡面文字（发牌 / 摸牌 xN）承担。 */
 .handbar.dealing {
   animation:.9s both handDealWash;
 }
@@ -1260,12 +1379,13 @@ button:disabled {
   16% {
     opacity:1;
   }
+  /* 中段画弧：--dx/--dy 现在是像素位移（原来是 calc 与 px 混用），两个位移量相加必须都走 calc。 */
   62% {
-    transform:translate3d(var(--dx), calc(var(--dy) - 48px), 0) rotate(5deg) scale(1.06);
+    transform:translate3d(calc(var(--dx, 0px) + 0px), calc(var(--dy, 0px) - 48px), 0) rotate(5deg) scale(1.06);
     opacity:1;
   }
   to {
-    transform:translate3d(var(--dx), var(--dy), 0) rotate(0deg) scale(.9);
+    transform:translate3d(var(--dx, 0px), var(--dy, 0px), 0) rotate(0deg) scale(.9);
     opacity:0;
   }
 }
@@ -2484,12 +2604,16 @@ button:disabled {
     display:flex;
   }
   /* 手牌整体居中：一排牌横着居中、不足两行时竖着也居中。
-     max-height 卡在两行牌的高度上（200px），超过就在这块区域里滚动，不再往下撑。 */
+     max-height 卡在两行牌的高度上（200px = 96×2 + 8），超过就在这块区域里滚动，不再往下撑。
+     取 40vh 而不是 32vh：视口高不足 625px 时 32vh 会小于两行，第二行被硬切掉一截。
+     safe 关键字是关键：内容装不下时对齐退回 start；不写 safe 的话居中会让起始侧也溢出，
+     而 scrollTop / scrollLeft 最小是 0，最前面那几张永远滚不到、点不到。
+     不支持 safe 的浏览器会丢掉整条声明，回落到 .card-grid 的 align-content:flex-start，同样安全。 */
   .hand-layout .card-grid {
-    justify-content:center;
-    align-content:center;
+    justify-content:safe center;
+    align-content:safe center;
     flex:auto;
-    max-height:min(200px,32vh);
+    max-height:min(200px,40vh);
     min-height:0;
     overflow-y:auto;
   }
@@ -2605,23 +2729,29 @@ button:disabled {
     height:52px;
     box-shadow:0 0 0 5px #226b7014;
   }
+  /* 只写 min-height 盖不住基础规则的 height:96px，必须把 height 一起改掉，
+     否则牌实际还是 96px 高，上面按 88px 算的两行上限（182px）就装不下第二行。 */
   .card {
     width:68px;
+    height:88px;
     min-height:88px;
   }
   .card .formula {
     font-size:15px;
     transform:translateY(calc(-50% - 16.5px));
   }
+  /* 叠牌堆也必须跟着降到 88px：.card-grid 是 flex-wrap，每一行的高度取该行最高的那个元素，
+     只要一行里有一摞牌还是 96px，两行就变成 96×2+6=198px，又把第二行顶出 182px 的上限。
+     .stack-layer 是绝对定位的"后面几张"，高度得和上面的牌一致，否则会露出 8px 白边。 */
   .card-stack {
     --stack-dx:9px;
     width:calc(68px + (var(--stack-size,1) - 1) * var(--stack-dx));
-    height:96px;
-    min-height:96px;
+    height:88px;
+    min-height:88px;
   }
   .card-stack .stack-layer {
     width:68px;
-    height:96px;
+    height:88px;
   }
   .card-stack .stack-count {
     font-size:10px;
@@ -2634,12 +2764,15 @@ button:disabled {
     min-height:0;
     padding:10px;
   }
-  /* 窄屏牌面高度 88px：两行 = 88×2 + 6 = 182px，同样落在「两个卡牌高度」里。 */
+  /* 窄屏牌面高度 88px（下面 .card / .card-stack 的 height 一起改了才真成立）：
+     两行 = 88×2 + 6(行间距) = 182px，但 * 是 border-box，这个容器自己还有
+     padding:2px 2px 6px，所以上限要写成 182 + 8 = 190px 才能完整露出两行，否则第二行还差 8px。
+     safe 关键字：装不下时退回 start，否则居中会把第一行推到滚动区上方，再也滚不回来。 */
   .handbar .hand-layout>div:first-child .card-grid {
     overscroll-behavior:contain;
-    justify-content:center;
-    align-content:center;
-    max-height:min(182px,34dvh);
+    justify-content:safe center;
+    align-content:safe center;
+    max-height:min(190px,34dvh);
     padding:2px 2px 6px;
     overflow-y:auto;
   }
