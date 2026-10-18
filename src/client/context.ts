@@ -13,8 +13,9 @@
  * 3. 调用方拿到的永远是最新值（回调闭包读的是 app.ts 里的当前变量），不做快照。
  */
 import type { ResolvedCustomRules } from "../shared/custom-rules-types.js";
+import type { CustomModeLimits } from "../shared/custom-limits.js";
 import type { AnyGameState, CardId } from "../shared/types.js";
-import type { PublicUser, ActivationCode, CustomPresetMeta, InvitationCode, PermissionsSnapshot, RoomSummary, SettingsTab, TaxSettings, UserRequestView } from "./types.js";
+import type { PublicUser, ActivationCode, CustomPresetFull, CustomPresetMeta, InvitationCode, PermissionsSnapshot, RoomSummary, SettingsTab, TaxSettings, UserRequestView } from "./types.js";
 
 export type ClientGame = AnyGameState;
 
@@ -72,6 +73,16 @@ export type AppBridge = {
   activationModalError(): string;
   /** 注册用户数：积分红包的领取人数上限按它算（0 表示还没拉到，回退到 managedUsers.length）。 */
   activationRegisteredUserCount(): number;
+  // ---- S3（rules-editor.ts）：规则编辑器 / 规则预设 / 只读规则摘要 ----
+  /** 当前能看的已解析规则：对局里那份优先，否则取房间的规则快照（等价于 app.ts 的 currentViewableRules()）。 */
+  currentViewableRules(): ResolvedCustomRules | undefined;
+  /** 「自定义模式设置」弹窗的预设全量列表；未加载是 undefined（渲染时回退成空数组）。 */
+  customPresetsSnapshot(): CustomPresetFull[] | undefined;
+  /** 「自定义模式设置」弹窗的全局自定义模式额度快照；未加载是 undefined。 */
+  customModeLimitsSnapshot(): CustomModeLimits | undefined;
+  // ---- S4（online.ts）：网络传输层 ----
+  /** 当前登录 token（localStorage 里的 ionStormAuthToken）；未登录是空串。 */
+  authToken(): string;
 };
 
 let installed: AppBridge | undefined;

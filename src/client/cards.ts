@@ -27,6 +27,38 @@ export const CUSTOM_CARD_TYPE_LABELS: Record<CustomCardDef["type"], string> = {
   generic: "通用",
 };
 
+/** 新建卡牌时可选的五种分类（阳离子 / 阴离子 / 操作 / 特殊 / 通用）。 */
+export const NEW_CARD_CATEGORIES = ["cation", "anion", "operation", "special", "generic"] as const;
+export type NewCardCategory = (typeof NEW_CARD_CATEGORIES)[number];
+export const NEW_CARD_CATEGORY_LABELS: Record<NewCardCategory, string> = {
+  cation: "阳离子",
+  anion: "阴离子",
+  operation: CUSTOM_CARD_TYPE_LABELS.operation,
+  special: CUSTOM_CARD_TYPE_LABELS.special,
+  generic: CUSTOM_CARD_TYPE_LABELS.generic,
+};
+
+/** 分类键：把离子按电荷拆成阳 / 阴，其余直接是 type（显示顺序列表的 cat-* 用）。 */
+export function customCardCategoryKey(def: CustomCardDef): string {
+  return def.type === "ion" ? (def.charge < 0 ? "anion" : "cation") : def.type;
+}
+
+/** 分类的中文显示名（规则编辑器、规则摘要、卡牌列表共用）。 */
+export function customCardCategoryLabel(def: CustomCardDef): string {
+  if (def.type === "ion") return def.charge < 0 ? "阴离子" : "阳离子";
+  return CUSTOM_CARD_TYPE_LABELS[def.type];
+}
+
+/** 某一个分类的默认卡牌定义：类型、默认电荷、默认顶部色条。 */
+export function newCardCategoryDefaults(category: NewCardCategory): { type: CustomCardDef["type"]; charge?: number; color: string } {
+  const base = category === "cation"
+    ? ({ type: "ion", charge: 1 } as CustomCardDef)
+    : category === "anion"
+      ? ({ type: "ion", charge: -1 } as CustomCardDef)
+      : ({ type: category } as CustomCardDef);
+  return { type: base.type, charge: base.type === "ion" ? base.charge : undefined, color: defaultTopColor(base) };
+}
+
 /** CardInstance（自定义模式带印记/寿命）→ 纯 CardId。 */
 export function cardIdOf(card: CardId | CardInstance): CardId {
   return typeof card === "string" ? card : card.cardId;
