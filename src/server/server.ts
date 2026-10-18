@@ -805,7 +805,10 @@ app.post("/api/rooms/:code/action", async (req, res) => {
       throw error;
     }
     const result = await submit(room, playerId, req.body.action as AnyActionIntent, "normal");
-    res.status(result.ok ? 200 : 400).json({ ...roomPayload(room, playerId), message: result.message });
+    // message 只在失败时带：引擎成功时 message 恒为 "ok"（见 engine.ts / custom-engine.ts），
+    // 而前端 applyServerPayload 见到 message 就 toast —— 那个「每次出牌都弹 ok」就是它。
+    const payload = roomPayload(room, playerId);
+    res.status(result.ok ? 200 : 400).json(result.ok ? payload : { ...payload, message: result.message });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "请求失败" });
   }

@@ -218,7 +218,6 @@ export function renderLeaveRoomDialog(state: Extract<DialogState, { kind: "leave
   const bridge = getBridge();
   const game = bridge.game();
   const room = bridge.room();
-  const target = state.local ? game?.players[0] : room?.players.find((player) => player.id === bridge.selfId());
   if (state.disband) {
     return `
     <div class="modal-backdrop">
@@ -241,12 +240,8 @@ export function renderLeaveRoomDialog(state: Extract<DialogState, { kind: "leave
   return `
     <div class="modal-backdrop">
       <section class="modal panel kick-dialog">
-        <div class="modal-head"><h2>退出房间</h2><button class="btn ghost" data-act="dialog-close">取消</button></div>
+        <div class="modal-head"><h2>${state.local ? "退出本地游戏" : "退出联机房间"}</h2></div>
         ${state.error ? `<div class="form-error">${escapeHtml(state.error)}</div>` : ""}
-        <div class="kick-target">
-          <span class="kick-target-mark">退</span>
-          <div><strong>${escapeHtml(target?.nickname ?? "当前玩家")}</strong><small>${state.local ? "本地游戏" : "你的房间席位"}</small></div>
-        </div>
         <p class="muted">${state.local ? "退出本地游戏将刷新页面并返回主界面。" : "退出后会立即返回主界面，并由 AI 接替你当前的房间席位。"}</p>
         <div class="top-actions">
           <button class="btn" data-act="dialog-close">取消</button>

@@ -133,7 +133,7 @@ import {
 } from "./rules-editor.js";
 // S4 批次一：网络传输层（设备 id / 浏览器指纹 / 请求头 / 响应解析 / http* 四个动词）。
 // 设备 id 与浏览器指纹改由 online.ts 自己持有，本地不再有这两个常量。
-import { authHeaders, httpDelete, httpGet, httpPatch, httpPost } from "./online.js";
+import { authHeaders, closeSocket, connectSocket, httpDelete, httpGet, httpPatch, httpPost, sendOnlineMessage, startHeartbeat, startReconcilePolling, stopOnlineTimers } from "./online.js";
 // 所有本地类型已外迁到 types.ts（S0 收尾）。只有两个依赖运行时值的类型留在本文件：
 // SeatView（ReturnType<typeof currentSeats>）和 NewCardCategory（type NewCardCategory 已经
 // 跟着 NEW_CARD_CATEGORIES 一起搬到 cards.ts，本文件改为从那里 import type）。
@@ -177,6 +177,7 @@ import type {
   RoomSummary,
   RulesDraft,
   RulesEditorTab,
+  ServerPayload,
   SettingsModal,
   SettingsTab,
   SetupModal,
@@ -525,22 +526,12 @@ function blankRulesDraft(): RulesDraft {
   };
 }
 
-const WEBSOCKET_HEARTBEAT_INTERVAL_MS = 2_000;
-const WEBSOCKET_RECONCILE_INTERVAL_MS = 5_000;
-const WEBSOCKET_RETRY_INTERVAL_MS = 10_000;
-const HTTP_FALLBACK_POLL_INTERVAL_MS = 6_000;
-const HTTP_POLL_HIDDEN_MIN_DELAY_MS = 20_000;
-const HTTP_POLL_PLAYING_MIN_DELAY_MS = 5_000;
-const HTTP_POLL_LOBBY_MIN_DELAY_MS = 10_000;
-const HTTP_PRESENCE_SYNC_INTERVAL_MS = 20_000;
-
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const WIN_MUSIC_CACHE_NAME = "ion-storm-win-music-v1";
 
 let game: ClientGame | undefined;
 let room: RoomSummary | undefined;
 let duelCooldownUntil = 0;
-let socket: WebSocket | undefined;
 let selfId = localStorage.getItem("ionStormPlayerId") ?? "";
 let authToken = localStorage.getItem("ionStormAuthToken") ?? "";
 let currentUser: PublicUser | undefined;
@@ -577,6 +568,10 @@ let passwordConfirm: { action: ProtectedAction; error?: string } | null = null;
  */
 let modalDepth = 0;
 let accountMenuOpen = false;
+/** 「管理 ▾」下拉是否展开：顶栏右侧只留 用户 / 排行榜 / 设置，联机/建房操作全收进这个菜单。 */
+let topMenuOpen = false;
+/** 顶栏中间「倒计时 + ▾」那个状态下拉是否展开：原来平铺的那一排状态胶囊全收在它里面。 */
+let statusMenuOpen = false;
 // 设置弹窗的当前页签。原来的「用户管理」「工单管理」独立页面已并入设置弹窗，靠这个变量切换内容。
 let currentSettingsTab: SettingsTab = "general";
 // 主题色是纯本地偏好：只写 CSS 变量，不参与任何服务端状态，也不进入 render 快照。
@@ -594,17 +589,8 @@ let drawAnimations: DrawAnimation[] = [];
 // 飞牌动画的定位状态：见 DealFlyMeasurement / applyDrawAnimationTargets。
 let dealFlyMeasurements = new Map<string, DealFlyMeasurement>();
 let dealFlyKeySeq = 0;
-let pollInterval = 0;
-let reconcileInterval = 0;
-let heartbeatInterval = 0;
-let httpFallback = false;
-let websocketFallbackTimer = 0;
-let websocketRetryTimer = 0;
-let roomStatePollPromise: Promise<void> | undefined;
 let refreshPending = false;
 let lastRefreshRequestId = "";
-let lastRoomStatePollAt = 0;
-let lastPresenceSyncAt = 0;
 let localBotTimer = 0;
 let localBotDeadline = 0;
 let dealAnimationTimer = 0;
@@ -808,10 +794,32 @@ installBridge({
   customModeLimitsSnapshot: () => customModeLimitsSnapshot,
   // S4（online.ts）：网络传输层要的当前 token（设备 id / 浏览器指纹由 online.ts 自己持有）。
   authToken: () => authToken,
+  // S4 批次二（online.ts）：连接 / 重连 / 心跳 / 轮询状态机要的回调。
+  // 版本号的读写仍然只在 app.ts：online.ts 只问「现在是哪一版」和「这个上下文还该不该管」。
+  gameContextVersion: () => gameContextVersion,
+  isOnlineContext: (code, version) => isOnlineContext(code, version),
+  onSocketMessage: (code, message, reply) => handleSocketMessage(code, message, reply),
+  applyServerPayload: (data, options) => applyServerPayload(data, options),
+  leaveRemovedRoom: (message) => leaveRemovedRoom(message),
+  takePendingOnlineBots: () => {
+    const count = pendingOnlineBots;
+    pendingOnlineBots = 0;
+    return count;
+  },
 });
 applyThemeColor(themeColor, false);
 render();
 void refreshAuth();
+// 顶栏两个下拉（中间「对局状态」/ 右侧「管理」）：点菜单外面任何地方都收起。
+// 菜单自己的按钮在 bind() 里单独处理（点完一项就收），触发按钮本身在 .status-menu / .top-menu
+// 里面，所以这里放行、交给对应的 toggle-* 自己翻转。
+document.addEventListener("click", (event) => {
+  const target = event.target as Element | null;
+  if (topMenuOpen && !target?.closest?.(".top-menu")) topMenuOpen = false;
+  else if (statusMenuOpen && !target?.closest?.(".status-menu")) statusMenuOpen = false;
+  else return;
+  render();
+});
 window.addEventListener("popstate", () => {
   // 我们自己为了收掉多余记录而发起的回退：浮层状态在关的时候就已经改好并渲染过了，
   // 这里只销账，顺便看看还有没有多余的记录要退。
@@ -1018,8 +1026,9 @@ function render(): void {
   // 是 room || game 的界面，在里面再放这三个按钮会让人在对局中途切模式、把当前 room/game 状态冲掉。
   // 对局 / 房间状态下顶部只有这一层：原来单独占一行的 .room-panel（本地对局 / 当前 / 出牌机会 / 牌库 /
   // 生成物 + 退出等按钮）已经并进顶栏——状态标签见 renderGameStatus，按钮见 renderGameActions。
-  // 回合倒计时 + 状态标签最终也并进这条顶栏（.topbar 中列，见 .topbar-status），不再单独占一行、
-  // 也不浮在棋盘上方：renderTimer 依旧按 #timer 取元素，元素换了位置，取元素的方式没变。
+  // 回合倒计时在顶栏中列（.topbar-status），它下面的状态胶囊现在收进同一个格子的下拉里
+  // （见 renderTopbarStatus / .status-menu-popover），顶栏永远只有一行。
+  // renderTimer 依旧按 #timer 取元素，元素从 div 换成 span、又套进了触发按钮里，取元素的方式没变。
   const startScreen = !room && !game;
   if (!startScreen) resetStartScreenBackground();
   // 五层浮层先各自渲染成字符串：既要塞进下面的模板，也要用来算末尾那个入场动画门控的「浮层身份签名」。
@@ -1029,8 +1038,8 @@ function render(): void {
   const passwordLayer = renderPasswordConfirm();
   const exchangeLayer = renderOpeningExchangeModal();
   const winLayer = renderWinModal();
-  // 手牌悬浮操作窗的空壳挂在 .shell 里（.layout 的兄弟位）：.card-grid 是 overflow:auto、
-  // .layout 是 overflow:hidden，放进任何一层里面都会被裁掉。壳里是空的，点牌时再局部填充（见 renderCardActionFlyout）。
+  // 手牌悬浮操作窗的空壳挂在 .shell 里（.layout 的兄弟位）：手牌网格是 overflow-y:auto /
+  // overflow-x:hidden（多行 + 纵向滚动）、.layout 是 overflow:hidden，放进任何一层里面都会被裁掉。壳里是空的，点牌时再局部填充（见 renderCardActionFlyout）。
   app.innerHTML = `
     <div class="shell ${requestNotice ? "has-request-notice" : ""}${startScreen ? " start-screen" : ""}">
       ${startScreen
@@ -1059,14 +1068,11 @@ function render(): void {
           <button class="mark" type="button" data-act="open-lucky" aria-label="查看今日幸运值">Ion</button>
           <div><h1>离子风暴</h1><span>130 张化学反应牌 · 本地与联机</span></div>
         </div>
-        <div class="topbar-status">
-          <div id="timer" class="timer"><strong>--</strong><span>当前回合</span></div>
-          ${renderGameStatus()}
-        </div>
+        ${renderTopbarStatus()}
         <div class="top-actions">
-          ${renderGameActions()}
           ${renderAccountControls()}
           <button class="btn" data-act="open-settings">设置</button>
+          ${renderGameActions()}
         </div>
       </header>`}
       ${requestNotice}
@@ -1074,7 +1080,6 @@ function render(): void {
         ${renderOpponentSeats()}
         ${renderSidebar()}
         ${renderBoard()}
-        ${renderSelfSeat()}
         ${renderHandbar()}
       </main>
       ${renderDrawAnimations()}
@@ -1457,7 +1462,7 @@ function renderSeatCard(seat: SeatView, index: number, options: { self?: boolean
   }
   return `<div class="player ${active ? "active" : ""} ${terminal ? "selectable" : ""} ${isSeatAnimating(seat.id) ? "drawing" : ""}" data-seat="${escapeAttr(seat.id)}" ${terminal ? `data-seat-id="${escapeAttr(seat.id)}"` : ""}>
                     <div class="player-main">${renderPlayerName(seat)}${roleBadges ? `<span class="${roleBadgeClass}">${roleBadges}</span>` : ""}${subtitle ? `<br><small class="user-title">${escapeHtml(subtitle)}</small>` : ""}<br><small>${status}${ready} · 手牌 ${handCount}${points}${seat.forcedAutoplay ? " · 托管" : ""}</small></div>
-                    <div class="player-tools"><span class="status-dot ${seat.online || automatic ? "online" : ""}"></span>${canCancelAutoplay ? `<button class="player-kick" data-act="cancel-autoplay">取消托管</button>` : ""}${canKick ? `<button class="player-kick" data-act="kick-room-player" data-player-id="${escapeAttr(seat.id)}" aria-label="移出 ${escapeAttr(seat.nickname)}">移出</button>` : ""}${canLeave ? `<button class="player-kick" data-act="leave-room" aria-label="退出房间">退出</button>` : ""}</div>
+                    <div class="player-tools">${canCancelAutoplay ? `<button class="player-kick" data-act="cancel-autoplay">取消托管</button>` : ""}${canKick ? `<button class="player-kick" data-act="kick-room-player" data-player-id="${escapeAttr(seat.id)}" aria-label="移出 ${escapeAttr(seat.nickname)}">移出</button>` : ""}${canLeave ? `<button class="player-kick" data-act="leave-room" aria-label="退出房间">退出</button>` : ""}</div>
                   </div>`;
 }
 
@@ -1532,27 +1537,52 @@ function renderSidebar(): string {
 }
 
 /**
- * 拼一个状态标签。第一梯队（当前出手的人 / 出牌机会 / 牌库）加 .chip-primary：
- * 深色文字 + 描边，在一排灰底标签里一眼能挑出来。
+ * 拼一行状态。第一梯队（当前出手的人 / 出牌机会 / 牌库 / 房间状态）加 .chip-primary：
+ * 左边一条主题色细线 + 数值加粗，在一列灰字里一眼能挑出来。
+ * value 省略时就是纯文字一行（「进行中」这类没有数值的状态）。
  */
-function statusChip(label: string, options: { primary?: boolean } = {}): string {
-  return `<span${options.primary ? ` class="chip-primary"` : ""}>${label}</span>`;
+function statusChip(label: string, options: { primary?: boolean; value?: string | number } = {}): string {
+  const cls = `status-chip${options.primary ? " chip-primary" : ""}`;
+  const text = `<span class="status-chip-label">${label}</span>`;
+  return options.value === undefined
+    ? `<span class="${cls}">${text}</span>`
+    : `<span class="${cls}">${text}<strong class="status-chip-value">${options.value}</strong></span>`;
 }
 
 /**
- * 对局状态标签：原来是一条单独占一整行的 .room-panel（本地对局 / 当前 / 出牌机会 / 牌库 / 生成物），
- * 现在整条并进顶栏、紧跟在 Logo 右侧——顶部只剩一层，省掉一整行的高度。
- * 两档优先级 + 从左到右裁剪（.game-status 是 nowrap + overflow:hidden）：
- *   第一梯队 = 当前出手的人 / 出牌机会 / 牌库（还要不要牌都看这三个），房间模式下再加房间码；
- *   第二梯队 = 生成物 / 待拿牌 / 对局状态 / 房间人数底注等，宽度不够时先被裁掉。
- * 可推导的重复标签一律不放：真人人数已含在「确认 x/y」里，默认初始手牌 / 默认出牌时限不值得占位，
- * 本地对局的「本地对局」「进行中」在 Logo 副标题和计时器上已经各说过一遍。
- * 昵称里的 @用户名 由 CSS 隐掉（顶栏只放得下一行）。
+ * 顶栏中列的「倒计时 + ▾」触发器，以及它的下拉。
+ *
+ * 原来倒计时下面还平铺着一整排状态胶囊（房间码 / 进行中 / 当前 / 出牌机会 / 牌库 / 生成物 …），
+ * 窗口一窄就折行、或者被横向裁掉。现在那一排整条收进这个下拉：顶栏中列只剩倒计时一个胶囊，
+ * 一行三个格子（Logo / 触发器 / 按钮组）在任何宽度下都排得下。
+ * 触发器本身是倒计时胶囊（最显眼、每秒都在动），右边跟一个倒三角提示可展开。
+ * 既没有房间也没有对局时（起始 / 建房设置界面）不给空菜单，只把胶囊本身渲染出来。
+ */
+function renderTopbarStatus(): string {
+  const rows = renderGameStatus();
+  const timer = `<span id="timer" class="timer"><strong>--</strong><span>当前回合</span></span>`;
+  if (!rows) return `<div class="topbar-status">${timer}</div>`;
+  return `<div class="topbar-status">
+          <div class="status-menu">
+            <button class="status-trigger${statusMenuOpen ? " is-open" : ""}" data-act="toggle-status-menu" aria-haspopup="menu" aria-expanded="${statusMenuOpen}" aria-label="对局状态">${timer}<span class="top-menu-caret" aria-hidden="true">▾</span></button>
+            ${statusMenuOpen ? `<div class="status-menu-popover" role="menu">${rows}</div>` : ""}
+          </div>
+        </div>`;
+}
+
+/**
+ * 对局状态的**内容**：这个函数的返回值现在整个塞进顶栏中列的下拉（.status-menu-popover）里，
+ * 一行一条、竖排——原来它是平铺在倒计时下面的一整排胶囊（.game-status），窄屏必挤。
+ * 两档优先级：第一梯队 = 房间码 / 状态 / 当前出手的人 / 出牌机会 / 牌库（加 .chip-primary），
+ * 其余是灰字次要信息；顺序即重要性，从上往下读。
+ * 可推导的重复标签一律不放：真人人数已含在「确认 x/y」里，默认初始手牌 / 默认出牌时限不值得占位。
+ * 昵称里的 @用户名 由 CSS 隐掉（一行只放得下昵称）。
  */
 function renderGameStatus(): string {
   if (!room && !game) return "";
   const active = game ? activeSeat() : undefined;
-  const chips: string[] = [];
+  const rows: string[] = [];
+  const badges: string[] = [];
   if (room) {
     const { humanCount, readyPlayers } = roomLobbyCounts();
     const customRulesLocallyReady = room.rulesetMode !== "custom"
@@ -1563,36 +1593,35 @@ function renderGameStatus(): string {
       : "";
     const reservedCode = room.codeKind === "reserved" || room.roomCodeKind === "reserved" || room.isReservedRoomCode;
     const roomStatus = room.status === "opening-exchange" ? "换牌中" : room.status === "playing" ? "进行中" : room.status === "ended" ? "已结束" : "等待中";
-    // 房间码是标签里唯一需要「一眼能念给别人听」的信息，放最前、单独一块底色。
-    chips.push(`<strong class="room-code ${reservedCode ? "reserved-room-code" : ""}">${room.code}</strong>`);
-    chips.push(statusChip(roomStatus));
+    // 房间码是唯一需要「一眼能念给别人听」的信息，永远排第一行、单独一块底色。
+    rows.push(`<span class="status-chip status-chip-code${reservedCode ? " reserved-room-code" : ""}"><span class="status-chip-label">房间码</span><strong class="status-chip-value">${room.code}</strong></span>`);
+    rows.push(statusChip("状态", { value: roomStatus, primary: true }));
     if (room.rulesetMode === "custom") {
-      chips.push(`<span class="duel-badge custom-mode-badge">${customRulesLocallyReady ? "自定义" : "规则下载中"}</span>`);
+      badges.push(`<span class="duel-badge custom-mode-badge">${customRulesLocallyReady ? "自定义" : "规则下载中"}</span>`);
     }
-    if (roomPresetLabel) chips.push(`<span class="duel-badge custom-preset-badge">${escapeHtml(roomPresetLabel)}</span>`);
-    if (room.duelMode) chips.push(`<span class="duel-badge">决斗</span>`);
-    if (isCardWarRoom(room)) chips.push(`<span class="duel-badge card-war-badge">算牌大战</span>`);
-    chips.push(statusChip(`确认 ${readyPlayers}/${humanCount}`));
-    chips.push(statusChip(`席位 ${room.players.length}/${room.capacity}`));
-    if ((room.baseBet ?? 5) !== 5) chips.push(statusChip(`底注 ${room.baseBet}`));
-    if (room.turnTimeLimitSec && room.turnTimeLimitSec !== DEFAULT_TURN_TIME_LIMIT_SEC) chips.push(statusChip(`出牌 ${room.turnTimeLimitSec}秒`));
-    if (room.openingExchangeSec && room.openingExchangeSec !== DEFAULT_OPENING_EXCHANGE_SEC) chips.push(statusChip(`换牌 ${room.openingExchangeSec}秒`));
-    if (game?.scoring) chips.push(statusChip(`累计积分 ${game.scoring.total ?? game.scoring.stake}`));
+    if (roomPresetLabel) badges.push(`<span class="duel-badge custom-preset-badge">${escapeHtml(roomPresetLabel)}</span>`);
+    if (room.duelMode) badges.push(`<span class="duel-badge">决斗</span>`);
+    if (isCardWarRoom(room)) badges.push(`<span class="duel-badge card-war-badge">算牌大战</span>`);
+    rows.push(statusChip("确认", { value: `${readyPlayers}/${humanCount}` }));
+    rows.push(statusChip("席位", { value: `${room.players.length}/${room.capacity}` }));
+    if ((room.baseBet ?? 5) !== 5) rows.push(statusChip("底注", { value: room.baseBet ?? 5 }));
+    if (room.turnTimeLimitSec && room.turnTimeLimitSec !== DEFAULT_TURN_TIME_LIMIT_SEC) rows.push(statusChip("出牌时限", { value: `${room.turnTimeLimitSec} 秒` }));
+    if (room.openingExchangeSec && room.openingExchangeSec !== DEFAULT_OPENING_EXCHANGE_SEC) rows.push(statusChip("换牌时限", { value: `${room.openingExchangeSec} 秒` }));
+    if (game?.scoring) rows.push(statusChip("累计积分", { value: game.scoring.total ?? game.scoring.stake }));
   } else if (game) {
-    chips.push(statusChip("进行中", { primary: true }));
-  } else {
-    chips.push(statusChip("对局入口"));
-    chips.push(statusChip("待开始"));
+    rows.push(statusChip("状态", { value: "进行中", primary: true }));
   }
-  // 对局相关的标签只在真的有对局时出现：房间大厅（还没开局）里「出牌机会 0 / 生成物 0」纯属噪声。
+  // 对局相关的行只在真的有对局时出现：房间大厅（还没开局）里「出牌机会 0 / 生成物 0」纯属噪声。
   if (game) {
-    chips.push(statusChip(`当前：${active ? renderPlayerName(active) : "无"}`, { primary: true }));
-    chips.push(statusChip(`出牌机会：${game.actionPoints}`, { primary: true }));
-    chips.push(statusChip(`牌库：${game.zones.drawPile.length}`, { primary: true }));
-    chips.push(statusChip(`生成物：${game.zones.products.length}`));
-    if (game.pendingDraw) chips.push(statusChip(`待拿牌：${game.pendingDraw.remaining}`));
+    rows.push(statusChip("当前", { value: active ? renderPlayerName(active) : "无", primary: true }));
+    rows.push(statusChip("出牌机会", { value: game.actionPoints, primary: true }));
+    rows.push(statusChip("牌库", { value: game.zones.drawPile.length, primary: true }));
+    rows.push(statusChip("生成物", { value: game.zones.products.length }));
+    if (game.pendingDraw) rows.push(statusChip("待拿牌", { value: game.pendingDraw.remaining }));
   }
-  return `<div class="game-status">${chips.join("")}</div>`;
+  // 徽章（自定义 / 预设 / 决斗 / 算牌大战）单独一行，横着排、放得下就一行，放不下折行。
+  if (badges.length) rows.push(`<span class="status-chips">${badges.join("")}</span>`);
+  return rows.join("");
 }
 
 /** 联机房间里「真人 / 已确认」两个计数的唯一来源：状态标签和按钮组都要用，别各算一遍。 */
@@ -1605,17 +1634,35 @@ function roomLobbyCounts(): { humanCount: number; readyPlayers: number } {
 }
 
 /**
- * 顶栏右侧的按钮组：原来贴在那条状态栏右端的按钮（退出 / 查看规则设置 / AI 建议 / 导出日志 /
- * 房间管理 / 确认开始）整组并进 .top-actions，和「设置」「账号」并排。
+ * 顶栏右侧的「管理 ▾」下拉。原来贴在那条状态栏右端的按钮（退出 / 查看规则设置 / 添加机器人 /
+ * 编辑房间 / 复制链接 / 刷新 / AI 建议 / 导出日志 / 确认开始）整组收进这个菜单，
+ * 顶栏只留 用户 / 排行榜 / 设置 三个按钮 + 这个菜单入口，窄屏不会再被挤成一排小字。
  * 所有 data-act 原样保留：bind() 每次渲染后按选择器重新绑定，所以按钮换了位置照样能点。
+ * 既没有房间也没有对局时返回空串（起始界面的三个入口在 .lobby-actions-row 里）。
+ * 触发按钮里「管理」/ 竖线 / ▾ 是三个 span：CSS 用 flex + gap 让它们居中对齐（竖线和 ▾ 都是装饰，
+ * aria-hidden）。展开时按钮多一个 .is-open，CSS 只靠它把 ▾ 平滑转 180°（不读 aria-expanded，样式和语义分开）。
  */
 function renderGameActions(): string {
+  const buttons = renderGameActionButtons();
+  if (!buttons) return "";
+  return `<div class="top-menu">
+          <button class="btn top-menu-trigger${topMenuOpen ? " is-open" : ""}" data-act="toggle-top-menu" aria-haspopup="menu" aria-expanded="${topMenuOpen}"><span>管理</span><span class="top-menu-sep" aria-hidden="true"></span><span class="top-menu-caret" aria-hidden="true">▾</span></button>
+          ${topMenuOpen ? `<div class="top-menu-popover" role="menu">${buttons}</div>` : ""}
+        </div>`;
+}
+
+/**
+ * 「管理」下拉里的按钮：常用操作在前，退出 / 解散这类破坏性操作放最后并单独包一层
+ * .top-menu-danger（CSS 用它画那条分割线 + 红字）。
+ */
+function renderGameActionButtons(): string {
   if (!room) {
     if (!game) return "";
-    const buttons = [`<button class="player-kick room-exit" data-act="leave-room">退出</button>`];
+    const buttons: string[] = [];
     if (isCustomGame(game)) buttons.push(`<button class="btn" data-act="view-room-rules">查看规则设置</button>`);
     buttons.push(renderAdvancedAiButton());
     if (game.status === "ended") buttons.push(`<button class="btn" data-act="export-game-log">导出日志</button>`);
+    buttons.push(`<div class="top-menu-danger"><button class="player-kick room-exit" data-act="leave-room">退出</button></div>`);
     return buttons.join("");
   }
   const { humanCount } = roomLobbyCounts();
@@ -1640,7 +1687,6 @@ function renderGameActions(): string {
   const canDisband = Boolean(currentUser && (currentUser.id === room.creatorAccountId || humanCount <= 1));
   const leaveHint = !canDisband && isOnlineGameRunning() ? "对局进行中，无法退出房间" : "";
   return [
-    `<button class="btn danger room-exit" data-act="${canDisband ? "disband-room" : "leave-room"}"${leaveHint ? ` disabled title="${leaveHint}"` : ""}>${canDisband ? "解散房间" : "退出房间"}</button>`,
     renderRefreshButton(),
     `<button class="btn" data-act="copy-room-link">复制链接</button>`,
     room.rulesetMode === "custom" ? `<button class="btn" data-act="view-room-rules">查看房间设置</button>` : "",
@@ -1649,6 +1695,7 @@ function renderGameActions(): string {
     renderAdvancedAiButton(),
     game?.status === "ended" ? `<button class="btn" data-act="export-game-log">导出日志</button>` : "",
     duelRematchBlocked ? `<span class="muted">房主当前没有决斗额度，无法再来一局</span>` : `<button class="btn primary" data-act="start-online" ${startButtonEnabled ? "" : "disabled"}>${startButtonLabel}</button>`,
+    `<div class="top-menu-danger"><button class="btn danger room-exit" data-act="${canDisband ? "disband-room" : "leave-room"}"${leaveHint ? ` disabled title="${leaveHint}"` : ""}>${canDisband ? "解散房间" : "退出房间"}</button></div>`,
   ].join("");
 }
 
@@ -1696,19 +1743,34 @@ function renderHandbar(): string {
   const handCards = hideHand ? Array(player?.hand.length ?? 0).fill("__hidden__") : player?.hand ?? [];
   const animatedDrawCount = player && isLandingAnimating(player.id) ? animatedDrawCounts.get(player.id) ?? 0 : 0;
   const stackGroups = !hideHand && player && (game?.status === "playing" || game?.status === "ended") ? buildHandDisplayGroups(player.hand) : undefined;
+  // 可反应高亮：只高亮「打出去会和溶液区 / 生成物区反应」的牌（见 reactiveHandCards）。
+  // 设置开关关掉时 reactive 为 undefined，下面两次渲染都不会带这个类，也就不去算合法操作。
+  const reactive = !hideHand && player && legalHighlightEnabled() ? reactiveHandCards(player.id, player.hand) : undefined;
+  const reactiveClass = (id: CardId): string => (reactive?.has(id) ? "card-playable-highlight" : "");
+  // 标题栏：原来悬浮在手牌区上方、自己独占一行的「我的头像」紧凑卡（昵称 + 手牌 N · 积分 M，
+  // 联机房间里还内联托管 / 退出）搬进 .handbar 内部当 Header，那一行和它的行间距（约 56px）
+  // 全部还给棋盘。席位卡在标题栏里水平居中，需要额外说明时在它右边紧挨着补一句（终局看的是哪家的牌、
+  // 机器人在算牌）；平时那句为空——手牌张数席位卡里已经有了，原来那条独立的 .section-title 一起下线。
+  const selfSeat = renderSelfSeat();
+  const viewedName = player ? player.profile?.nickname ?? player.nickname : "";
+  const headNote = terminal
+    ? `查看 ${escapeHtml(viewedName)} · ${player?.hand.length ?? 0} 张`
+    : hideHand
+      ? "正在自动计算"
+      : "";
+  const head = selfSeat || headNote ? `<div class="hand-head">${selfSeat}${headNote ? `<span class="hand-head-note">${headNote}</span>` : ""}</div>` : "";
   return `
     <footer class="handbar ${player && isSeatAnimating(player.id) ? "dealing" : ""}">
+      ${head}
       <div class="hand-layout">
         <div>
-          <div class="section-title">
-            <span>${player ? `${renderPlayerName(player)} ${hideHand ? "正在自动计算" : "的手牌"}` : "手牌"}</span>
-            <span>${terminal ? "终局查看" : player?.hand.length ?? 0}</span>
-          </div>
           <div class="card-grid">
-            ${hideHand ? "" : `<button class="card filter-card ${selectedCard === "all" ? "selected" : ""}" data-card="all"><span class="formula">全部</span><span class="kind">动作筛选</span></button>`}
             ${stackGroups
-      ? stackGroups.map((group) => renderHandStack(group, animatedDrawCount, player!.hand.length)).join("")
-      : handCards.map((card, index) => renderCard(card, !hideHand, index >= handCards.length - animatedDrawCount ? "dealing-card" : "", index)).join("")}
+      ? stackGroups.map((group) => renderHandStack(group, animatedDrawCount, player!.hand.length, reactiveClass(group.card))).join("")
+      : handCards.map((card, index) => {
+        const dealing = index >= handCards.length - animatedDrawCount ? "dealing-card" : "";
+        return renderCard(card, !hideHand, [dealing, reactiveClass(cardIdOf(card))].filter(Boolean).join(" "), index);
+      }).join("")}
           </div>
         </div>
       </div>
@@ -1751,7 +1813,7 @@ function flyOriginPoint(): DealTargetPoint {
 /**
  * 发牌动画的终点：一律现量「玩家头像卡片」的正中心，不用任何写死坐标或缓存。
  * 新布局下头像卡分两处，按 data-seat 认人：
- *   - 自己的头像 → .self-seat>.player[data-seat]（手牌区正上方居中那条紧凑卡）；
+ *   - 自己的头像 → .self-seat>.player[data-seat]（手牌区标题栏里那条紧凑卡）；
  *   - 对手 / 其它席位 → .opponents-row>.player[data-seat]（顶部横排）。
  * 两者都量不到（起始界面等）才退到 .handbar、再退 .board，只为不让动画落空。
  */
@@ -2294,6 +2356,15 @@ function bind(): void {
   });
   document.querySelectorAll<HTMLElement>("[data-act]").forEach((el) => {
     el.addEventListener("click", () => void handleAct(el.dataset.act!, el));
+  });
+  // 「管理 ▾」下拉：点菜单里的任意一项都收起菜单。项目自己的处理已经同步跑过（多数会自己 render 一次），
+  // 这里补一次渲染，保证「复制链接」「导出日志」这种不重渲染的操作也能把菜单收掉。
+  document.querySelectorAll<HTMLElement>(".top-menu-popover").forEach((popover) => {
+    popover.addEventListener("click", () => {
+      if (!topMenuOpen) return;
+      topMenuOpen = false;
+      render();
+    });
   });
   // 点击弹窗外的遮罩即关闭。必须判定 event.target 就是遮罩本身：如果直接给遮罩加
   // data-act，弹窗内部的点击会冒泡上来，导致点「切换注册」「提交」等按钮时弹窗被关掉。
@@ -2995,6 +3066,20 @@ async function handleAct(action: string, el?: HTMLElement): Promise<void> {
   }
   if (action === "toggle-account-menu") {
     accountMenuOpen = !accountMenuOpen;
+    topMenuOpen = false;
+    statusMenuOpen = false;
+    render();
+  }
+  if (action === "toggle-top-menu") {
+    topMenuOpen = !topMenuOpen;
+    accountMenuOpen = false;
+    statusMenuOpen = false;
+    render();
+  }
+  if (action === "toggle-status-menu") {
+    statusMenuOpen = !statusMenuOpen;
+    accountMenuOpen = false;
+    topMenuOpen = false;
     render();
   }
   if (action === "open-leaderboard") {
@@ -3895,194 +3980,59 @@ async function joinRoom(code: string, botsToAdd = 0): Promise<void> {
   connectSocket(code, contextVersion);
 }
 
-function connectSocket(code: string, contextVersion = gameContextVersion, preserveFallback = false): void {
-  const previousSocket = socket;
-  socket = undefined;
-  previousSocket?.close();
-  if (!preserveFallback) {
-    stopPolling();
-    httpFallback = false;
-  }
-  const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
-  let nextSocket: WebSocket;
-  try {
-    nextSocket = new WebSocket(`${wsProtocol}://${location.host}/ws?code=${encodeURIComponent(code)}`);
-  } catch {
-    startHttpFallback(code, contextVersion);
-    scheduleSocketReconnect(code, contextVersion);
-    return;
-  }
-  socket = nextSocket;
-  if (websocketFallbackTimer) window.clearTimeout(websocketFallbackTimer);
-  websocketFallbackTimer = window.setTimeout(() => {
-    if (isOnlineContext(code, contextVersion) && nextSocket.readyState !== WebSocket.OPEN) startHttpFallback(code, contextVersion);
-  }, 1800);
-  nextSocket.onopen = () => {
-    if (!isOnlineContext(code, contextVersion) || socket !== nextSocket) {
-      nextSocket.close();
-      return;
+/**
+ * WS 消息的处理入口（连接本身在 online.ts）。
+ *
+ * online.ts 只负责「解析 JSON + 校验这条消息还属于当前上下文与当前 socket」，然后把消息原样递进来：
+ * 这里才碰对局状态——同步服务端时钟、合并房间/对局快照、处理退房 / 解散 / 动作被拒这些跳转。
+ * reply 在同一条 socket 上回包（补建 AI、gameStartedAck）；code 是这条连接加入的房间码，
+ * 不能用 room?.code 现取，因为中途 applyServerPayload 可能已经动过 room。
+ */
+function handleSocketMessage(code: string, msg: any, reply: (payload: Record<string, unknown>) => void): void {
+  syncServerClock(msg.serverNow);
+  if (msg.type === "joined") {
+    selfId = msg.playerId;
+    localStorage.setItem("ionStormPlayerId", selfId);
+    applyServerPayload(msg);
+    for (let i = 0; i < pendingOnlineBots; i++) {
+      reply({ type: "addBot", code, ownerId: selfId });
     }
-    if (websocketFallbackTimer) window.clearTimeout(websocketFallbackTimer);
-    if (websocketRetryTimer) window.clearTimeout(websocketRetryTimer);
-    websocketRetryTimer = 0;
-    stopPolling();
-    httpFallback = false;
-    startReconcilePolling(code, contextVersion);
-    nextSocket.send(JSON.stringify({ type: "joinRoom", code, playerId: selfId, token: authToken || undefined }));
-  };
-  nextSocket.onmessage = (event) => {
-    if (!isOnlineContext(code, contextVersion) || socket !== nextSocket) return;
-    let msg: any;
-    try {
-      msg = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-    syncServerClock(msg.serverNow);
-    if (msg.type === "joined") {
-      selfId = msg.playerId;
-      localStorage.setItem("ionStormPlayerId", selfId);
-      applyServerPayload(msg);
-      for (let i = 0; i < pendingOnlineBots; i++) {
-        nextSocket.send(JSON.stringify({ type: "addBot", code, ownerId: selfId }));
-      }
-      pendingOnlineBots = 0;
-    }
-    if (msg.type === "gameStarted") {
-      applyServerPayload(msg, { sound: true });
-      nextSocket.send(JSON.stringify({ type: "gameStartedAck", code, playerId: selfId, gameId: msg.gameId }));
-    }
-    if (msg.type === "refreshStateResult") {
-      if (msg.requestId === lastRefreshRequestId) {
-        refreshPending = false;
-      }
-      applyServerPayload(msg, { sound: true });
-      render();
-    }
-    if (msg.type === "roomState") applyServerPayload(msg);
-    if (msg.type === "gameState") {
-      applyServerPayload(msg, { sound: true });
-    }
-    if (msg.type === "leftRoom") leaveRemovedRoom("你已退出房间");
-    // 房主解散 / 最后一个真人离开：服务端已经把这个房间删了，本地直接把状态清干净回主界面。
-    if (msg.type === "roomDisbanded") leaveRemovedRoom(typeof msg.message === "string" && msg.message ? msg.message : "房间已解散");
-    if (msg.type === "duelDissolved") {
-      toast("决斗房间已结束，请刷新查看终局");
-      void manualRefreshState();
-    }
-    if (msg.type === "actionRejected") {
-      resetModalActionSubmission();
-      toast(msg.message);
-      render();
-    }
-  };
-  nextSocket.onerror = () => {
-    if (isOnlineContext(code, contextVersion)) {
-      startHttpFallback(code, contextVersion);
-      scheduleSocketReconnect(code, contextVersion);
-    }
-  };
-  nextSocket.onclose = () => {
-    if (socket === nextSocket) socket = undefined;
-    if (isOnlineContext(code, contextVersion) && game?.status !== "ended") {
-      startHttpFallback(code, contextVersion);
-      scheduleSocketReconnect(code, contextVersion);
-    }
-  };
-}
-
-function scheduleSocketReconnect(code: string, contextVersion = gameContextVersion): void {
-  if (websocketRetryTimer || !isOnlineContext(code, contextVersion) || game?.status === "ended") return;
-  websocketRetryTimer = window.setTimeout(() => {
-    websocketRetryTimer = 0;
-    if (!isOnlineContext(code, contextVersion) || game?.status === "ended") return;
-    if (socket?.readyState === WebSocket.OPEN) return;
-    connectSocket(code, contextVersion, true);
-  }, WEBSOCKET_RETRY_INTERVAL_MS);
-}
-
-function startHttpFallback(code: string, contextVersion = gameContextVersion): void {
-  if (httpFallback || !isOnlineContext(code, contextVersion) || game?.status === "ended") return;
-  toast("WebSocket 不可用，已切换为 HTTP 兼容模式");
-  ensureHttpPolling(code, contextVersion);
-  scheduleSocketReconnect(code, contextVersion);
-  if (pendingOnlineBots > 0) {
-    const count = pendingOnlineBots;
     pendingOnlineBots = 0;
-    for (let i = 0; i < count; i++) void httpPost(`/api/rooms/${code}/bots`, { ownerId: selfId });
   }
-}
-
-function ensureHttpPolling(code: string, contextVersion = gameContextVersion): void {
-  if (!isOnlineContext(code, contextVersion)) return;
-  httpFallback = true;
-  stopReconcilePolling();
-  if (pollInterval) return;
-  void pollRoomState(code, contextVersion, true);
-  pollInterval = window.setInterval(() => void pollRoomState(code, contextVersion), HTTP_FALLBACK_POLL_INTERVAL_MS);
-}
-
-function stopPolling(): void {
-  if (pollInterval) window.clearInterval(pollInterval);
-  pollInterval = 0;
-}
-
-function startHeartbeat(): void {
-  if (heartbeatInterval) return;
-  const code = room?.code;
-  const contextVersion = gameContextVersion;
-  if (!code || !isOnlineContext(code, contextVersion)) return;
-  const heartbeat = () => {
-    if (!isOnlineContext(code, contextVersion)) {
-      stopHeartbeat();
-      return;
+  if (msg.type === "gameStarted") {
+    applyServerPayload(msg, { sound: true });
+    reply({ type: "gameStartedAck", code, playerId: selfId, gameId: msg.gameId });
+  }
+  if (msg.type === "refreshStateResult") {
+    if (msg.requestId === lastRefreshRequestId) {
+      refreshPending = false;
     }
-    if (game?.status === "ended") {
-      stopHeartbeat();
-      return;
-    }
-    if (socket?.readyState === WebSocket.OPEN && selfId) {
-      socket.send(JSON.stringify({ type: "heartbeat", code, playerId: selfId }));
-    }
-  };
-  heartbeat();
-  heartbeatInterval = window.setInterval(heartbeat, WEBSOCKET_HEARTBEAT_INTERVAL_MS);
-}
-
-function stopHeartbeat(): void {
-  if (heartbeatInterval) window.clearInterval(heartbeatInterval);
-  heartbeatInterval = 0;
-}
-
-function startReconcilePolling(code: string, contextVersion = gameContextVersion): void {
-  stopReconcilePolling();
-  if (httpFallback || !isOnlineContext(code, contextVersion)) return;
-  reconcileInterval = window.setInterval(() => {
-    if (isOnlineContext(code, contextVersion)) void pollRoomState(code, contextVersion);
-  }, WEBSOCKET_RECONCILE_INTERVAL_MS);
-}
-
-function stopReconcilePolling(): void {
-  if (reconcileInterval) window.clearInterval(reconcileInterval);
-  reconcileInterval = 0;
-}
-
-function stopOnlineTimers(): void {
-  stopPolling();
-  stopReconcilePolling();
-  stopHeartbeat();
-  httpFallback = false;
-  lastRoomStatePollAt = 0;
-  lastPresenceSyncAt = 0;
-  if (websocketFallbackTimer) window.clearTimeout(websocketFallbackTimer);
-  websocketFallbackTimer = 0;
-  if (websocketRetryTimer) window.clearTimeout(websocketRetryTimer);
-  websocketRetryTimer = 0;
+    applyServerPayload(msg, { sound: true });
+    render();
+  }
+  if (msg.type === "roomState") applyServerPayload(msg);
+  if (msg.type === "gameState") {
+    applyServerPayload(msg, { sound: true });
+  }
+  if (msg.type === "leftRoom") leaveRemovedRoom("你已退出房间");
+  // 房主解散 / 最后一个真人离开：服务端已经把这个房间删了，本地直接把状态清干净回主界面。
+  if (msg.type === "roomDisbanded") leaveRemovedRoom(typeof msg.message === "string" && msg.message ? msg.message : "房间已解散");
+  if (msg.type === "duelDissolved") {
+    toast("决斗房间已结束，请刷新查看终局");
+    void manualRefreshState();
+  }
+  if (msg.type === "actionRejected") {
+    resetModalActionSubmission();
+    toast(msg.message);
+    render();
+  }
 }
 
 function beginGameContextSwitch(): number {
   gameContextVersion += 1;
   roomJoinVersion += 1;
+  topMenuOpen = false;
+  statusMenuOpen = false;
   resetAdvancedAiState();
   stopOnlineTimers();
   if (timerInterval) window.clearInterval(timerInterval);
@@ -4099,9 +4049,7 @@ function beginGameContextSwitch(): number {
   activeTouchCardDescriptionKey = "";
   if (modalActionSubmissionTimer) window.clearTimeout(modalActionSubmissionTimer);
   modalActionSubmissionTimer = 0;
-  const previousSocket = socket;
-  socket = undefined;
-  previousSocket?.close();
+  closeSocket();
   activeWinMusic?.pause();
   activeWinMusic = undefined;
   if (activeWinMusicUrl) URL.revokeObjectURL(activeWinMusicUrl);
@@ -4138,78 +4086,7 @@ function syncServerClock(serverNow: unknown): void {
   serverClock = { serverNow, clientNow: performance.now() };
 }
 
-async function pollRoomState(code: string, contextVersion = gameContextVersion, force = false): Promise<void> {
-  if (!selfId || !isOnlineContext(code, contextVersion)) return;
-  if (roomStatePollPromise) return roomStatePollPromise;
-  const now = Date.now();
-  const minimumDelay = document.hidden
-    ? HTTP_POLL_HIDDEN_MIN_DELAY_MS
-    : game?.status === "playing" || game?.status === "opening-exchange"
-      ? HTTP_POLL_PLAYING_MIN_DELAY_MS
-      : HTTP_POLL_LOBBY_MIN_DELAY_MS;
-  if (!force && now - lastRoomStatePollAt < minimumDelay) return;
-  lastRoomStatePollAt = now;
-  const playerId = selfId;
-  const includePresence = now - lastPresenceSyncAt >= HTTP_PRESENCE_SYNC_INTERVAL_MS;
-  if (includePresence) lastPresenceSyncAt = now;
-  let request!: Promise<void>;
-  request = (async () => {
-    try {
-      const data = await httpGet(
-        `/api/rooms/${code}/state?playerId=${encodeURIComponent(playerId)}${includePresence ? "&presence=1" : ""}`,
-      );
-      if (!isOnlineContext(code, contextVersion)) return;
-      applyServerPayload(data);
-    } catch (error) {
-      if (includePresence) lastPresenceSyncAt = 0;
-      if (
-        isOnlineContext(code, contextVersion) &&
-        error instanceof Error &&
-        (error.message.includes("没有权限操作该席位") ||
-          error.message.includes("席位不存在") ||
-          error.message.includes("房间不存在或已回收"))
-      ) {
-        // 房间可能是房主解散的，也可能是最后一名玩家离开后被回收的，这里给一个通用的说法。
-        leaveRemovedRoom(error.message.includes("不存在") ? "房间已解散或已被回收" : undefined);
-      }
-      // Other failures retry on the next interval without noisy intranet toasts.
-    } finally {
-      if (roomStatePollPromise === request) roomStatePollPromise = undefined;
-    }
-  })();
-  roomStatePollPromise = request;
-  return request;
-}
-
-async function sendOnlineMessage(wsMessage: Record<string, unknown>, httpPath: string, body: Record<string, unknown>): Promise<void> {
-  const code = room?.code;
-  const contextVersion = gameContextVersion;
-  if (!code || !isOnlineContext(code, contextVersion)) return;
-  if (!httpFallback && socket?.readyState === WebSocket.OPEN) {
-    try {
-      socket.send(JSON.stringify(wsMessage));
-      return;
-    } catch {
-      startHttpFallback(code, contextVersion);
-    }
-  }
-  try {
-    ensureHttpPolling(code, contextVersion);
-    const data = await httpPost(httpPath, body);
-    if (!isOnlineContext(code, contextVersion)) return;
-    applyServerPayload(data, { sound: true });
-  } catch (error) {
-    if (!isOnlineContext(code, contextVersion)) return;
-    if (error instanceof Error && error.message.includes("决斗房间已自动解散")) {
-      leaveRemovedRoom("决斗房间已自动解散");
-      return;
-    }
-    toast(error instanceof Error ? error.message : "请求失败");
-  }
-}
-
-
-function applyServerPayload(data: { room?: RoomSummary; game?: AnyGameState; message?: string; error?: string; serverNow?: number; duelDissolved?: boolean }, options: { sound?: boolean } = {}): void {
+function applyServerPayload(data: ServerPayload, options: { sound?: boolean } = {}): void {
   if (data.duelDissolved) {
     toast("决斗房间已结束，请刷新查看终局");
   }
@@ -4282,7 +4159,11 @@ function applyServerPayload(data: { room?: RoomSummary; game?: AnyGameState; mes
     if (options.sound) playStateSound(previous, data.game, drewCards);
     playCustomAudioEvents(game);
   }
-  if (data.error || data.message) toast(data.error ?? data.message!);
+  // 引擎成功时返回的 message 恒为 "ok"（engine.ts / custom-engine.ts），那是协议常量、不是给人看的文案。
+  // 只弹错误和真正的提示；服务端也已不再在成功响应里带 message，这条是兜底，防止旧响应 / 别的入口
+  // 再把这个 "ok" 弹成 toast。
+  const notice = data.error ?? data.message;
+  if (notice && notice !== "ok") toast(notice);
   if (changed) render();
 }
 
@@ -4825,7 +4706,7 @@ function bindCardActionFlyout(): void {
     },
     true,
   );
-  // 手牌区自己滚（.card-grid 是 overflow:auto）或视口尺寸变化后重新贴回那张牌。
+  // 页面任何一处滚动（含手牌区自己那条纵向滚动条）或视口尺寸变化后，重新贴回那张牌。
   // scroll 不冒泡，只能在捕获阶段听。
   document.addEventListener("scroll", () => positionCardActionFlyout(), true);
   window.addEventListener("resize", () => positionCardActionFlyout());
@@ -4833,7 +4714,7 @@ function bindCardActionFlyout(): void {
 
 function renderTimer(): void {
   window.clearInterval(timerInterval);
-  const el = document.querySelector<HTMLDivElement>("#timer");
+  const el = document.querySelector<HTMLElement>("#timer");
   if (!el) return;
   if (mode === "local") {
     const tickLocal = () => {
@@ -5134,6 +5015,56 @@ function actionsForPlayer(playerId: string): RulesetAction[] {
   if (!game) return [];
   if (isCustomGame(game)) return enumerateRulesetActions(game, playerId);
   return uniqueActions(enumerateActions(game as GameState, playerId));
+}
+
+/**
+ * 手牌「可反应」高亮的开关，存在 localStorage.ionStormLegalHighlight。
+ * 没写过（或空串）按「开」处理，新特性默认生效；只有明确存成 "0" / "false" / "off" 才整块跳过。
+ * 关掉时 reactiveHandCards 根本不会被调用，连合法操作枚举都省掉。
+ */
+function legalHighlightEnabled(): boolean {
+  const raw = (localStorage.getItem("ionStormLegalHighlight") ?? "").trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off";
+}
+
+/**
+ * 一条合法操作算不算「与场上溶液区 / 生成物区发生反应」。
+ * 经典局和自定义局用的是同一套标记：枚举时只有 findReactionTargets / findCustomReactionTargets
+ * 真的找到了反应组合，才会生成带 targetId 的 play-ion 动作；而不带 targetId 的 play-ion
+ * 只在「一个反应目标都没有」时才补出来（两个引擎都是 `if (targets.length === 0)` 才 push），
+ * 所以「有 targetId」严格等价于「打出去会和场上的离子/生成物反应」。
+ * 其它动作一律不算：play-special / play-function / follow-function / counter-draw 不消耗溶液区，
+ * wang-zha 只是弃 Acid+Alkali 去挡摸牌（engine 里走 resolveAddSodium），也不碰溶液区。
+ */
+function reactionCardIds(action: RulesetAction): CardId[] {
+  if (isCustomLegalAction(action)) return action.kind === "play-ion" && action.targetId ? action.cardIds : [];
+  return action.type === "play-ion" && action.targetId ? [action.card] : [];
+}
+
+/**
+ * 当前手上有哪些牌打出去会和溶液区 / 生成物区反应——只有这些牌加高亮。
+ * 数据源仍是现成的合法操作枚举（actionsForPlayer），只是从「所有合法操作」收窄成
+ * 「带反应目标的出离子牌」；不是自己回合时枚举为空，天然不会高亮。
+ * 按 game 对象缓存：每次 render 都会问一次，但同一份局面只算一次（自定义规则的枚举代价不低）。
+ */
+const reactiveCardsCache = new WeakMap<object, Map<string, Set<CardId>>>();
+function reactiveHandCards(playerId: string, hand: readonly (CardId | CardInstance)[]): Set<CardId> {
+  if (!game || game.status !== "playing") return new Set<CardId>();
+  let byPlayer = reactiveCardsCache.get(game);
+  if (!byPlayer) {
+    byPlayer = new Map<string, Set<CardId>>();
+    reactiveCardsCache.set(game, byPlayer);
+  }
+  const cached = byPlayer.get(playerId);
+  if (cached) return cached;
+  const inHand = new Set<CardId>();
+  for (const entry of hand) inHand.add(cardIdOf(entry));
+  const reactive = new Set<CardId>();
+  for (const action of actionsForPlayer(playerId)) {
+    for (const id of reactionCardIds(action)) if (inHand.has(id)) reactive.add(id);
+  }
+  byPlayer.set(playerId, reactive);
+  return reactive;
 }
 
 function renderAdvancedAiButton(): string {
@@ -5692,6 +5623,8 @@ async function logout(): Promise<void> {
   resetAdvancedAiState();
   requestSeenThrough = 0;
   accountMenuOpen = false;
+  topMenuOpen = false;
+  statusMenuOpen = false;
   dialog = null;
   localStorage.removeItem("ionStormAuthToken");
   const wasOnline = mode === "online";
@@ -5737,6 +5670,8 @@ async function loadLeaderboard(): Promise<void> {
  */
 async function openSettingsModal(tab: SettingsTab = "general"): Promise<void> {
   accountMenuOpen = false;
+  topMenuOpen = false;
+  statusMenuOpen = false;
   modal = { kind: "settings" };
   await setSettingsTab(tab);
 }

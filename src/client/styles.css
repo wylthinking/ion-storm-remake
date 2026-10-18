@@ -4,6 +4,29 @@
   /* 主题色由设置弹窗的「常规设置」写入 html 行内样式，这里只提供默认值。 */
   --primary-theme-color:#226b70;
   --primary-theme-contrast:#fff;
+  /* 顶栏（以及顶栏里那两个下拉菜单）的统一字号：Logo 副标题 / 状态胶囊 / 右侧按钮 /
+     「管理」触发按钮 / 菜单项全都用这一个值 —— 菜单里的文字和右边「排行榜 / 设置」是
+     同一个字号（都由它决定），不会再出现菜单字比按钮小一档的情况。改这一处整条顶栏跟着变。 */
+  --topbar-font:14px;
+  /* 顶栏按钮的统一字重：排行榜 / 设置 /「管理」/ 两个下拉的菜单项都用它，
+     和 --topbar-font 一起构成顶栏唯一的「字体套餐」，不再各写各的。 */
+  --topbar-weight:500;
+  /* ── 全局卡牌尺寸：全站唯一来源 ─────────────────────────────────────────
+     溶液区 / 生成物区 / 手牌 / 开局换牌弹窗 / 手牌悬浮预览里的每一张 .card 都只认这组变量，
+     不再有任何区域单独写死宽高（以前手牌一套 --hand-card-*、其它区域一套 76×96，
+     结果手牌缩了、溶液区和生成物区没跟着缩）。
+       --card-width     牌宽：跟视口 6vw，小窗夹到 50px，大窗封顶 80px
+       --card-height    牌高：宽 × 1.4（= 5:7，和改造前手牌的比例一致）
+       --card-font      牌内基准字号：宽 × .2
+       --card-inset     牌面左右留白（化学式 / 种类小字共用）：宽 × .075，
+                        写死 8px 的话 50px 的牌只剩 34px 放化学式，SiO₃²⁻ 就得折行
+       --card-top-bar   顶部分类色条厚度：宽 × .066（76px 的牌上仍是原来的 5px）
+     改这一处，整副牌连同牌里的字、角标、摞牌错位一起等比缩放。 */
+  --card-width:clamp(50px, 6vw, 80px);
+  --card-height:calc(var(--card-width) * 1.4);
+  --card-font:calc(var(--card-width) * .2);
+  --card-inset:calc(var(--card-width) * .075);
+  --card-top-bar:calc(var(--card-width) * .066);
   color-scheme:light;
   color:#20242a;
   font-synthesis:none;
@@ -45,22 +68,36 @@ button:disabled {
 .shell.has-request-notice {
   grid-template-rows:auto auto 1fr auto;
 }
-/* 顶栏是这一屏唯一的一层头部：Logo 靠左、功能按钮靠右，
-   中间那一组（倒计时 + 状态胶囊，.topbar-status）绝对居中叠在两者上方——
-   它自己占两行（倒计时在上、胶囊在下），整体以顶栏中线为轴左右居中。 */
+/* 顶栏是这一屏唯一的一层头部，一行三个格子：Logo 靠左 / 倒计时触发器居中 / 功能按钮靠右。
+   中间那组（倒计时 + ▾）只有一片胶囊宽，绝对居中在屏幕中线上（见 .topbar-status）——
+   不再跟着网格第 2 列居中于左右两组之间：那样两侧列宽不等时会偏十几到几十像素。
+   左右两组再宽也挤不动它；≤860px 时退回网格第 2 列，免得压到右侧按钮上。
+   状态胶囊全部收进触发器下面的下拉（.status-menu-popover），顶栏高度在任何宽度下都只有这一行。 */
 .topbar {
+  /* 顶栏统一字号（--topbar-font）在 :root 里定义：Logo 副标题 / 倒计时 / 右侧按钮 /
+     两个下拉菜单的菜单项全部用它，只有 .brand h1（Logo 字标）保持自己的字号。 */
   -webkit-backdrop-filter:blur(16px);
   backdrop-filter:blur(16px);
   z-index:5;
   background:#fffcf6e0;
   border-bottom:1px solid #20242a1f;
   grid-template-columns:auto minmax(0,1fr) auto;
-  align-items:start;
+  align-items:center;
   gap:12px;
   padding:14px clamp(12px,3vw,28px);
+  font-size:var(--topbar-font);
   display:grid;
   position:sticky;
   top:0;
+}
+/* 顶栏里所有按钮（排行榜 / 设置 /「管理」触发按钮）的字体参数只在这一处：
+   字号 14px、字重 500、字体族继承（font-family:inherit，不引入任何自造字体）。
+   两个下拉里的菜单项在下面用同一组变量，所以「管理」「排行榜」「菜单项」是同一套数值，
+   不可能再出现「菜单字比按钮小/细」的情况。昵称胶囊 .account-chip 例外，它有自己那套 800 强调。 */
+.topbar .btn:not(.account-chip) {
+  font-size:var(--topbar-font);
+  font-family:inherit;
+  font-weight:var(--topbar-weight);
 }
 .brand {
   align-items:center;
@@ -78,6 +115,9 @@ button:disabled {
   width:38px;
   height:38px;
   padding:0;
+  /* 字标里的 Ion 自己一档：顶栏把 font-size 收到 --topbar-font 了，这里不写死的话
+     顶栏里的 Logo 会比起始界面那个小一号，两处就对不上了。 */
+  font-size:16px;
   font-weight:900;
   display:grid;
   box-shadow:0 12px 30px #226b7040;
@@ -90,11 +130,12 @@ button:disabled {
 .brand span {
   color:#69727b;
   margin-top:2px;
-  font-size:12px;
+  font-size:var(--topbar-font);
   display:block;
 }
 /* 回合倒计时：从原来 118×64 的深色大块压成紧凑胶囊，是中间那一组的第一行（状态胶囊在它下面）。
-   高度约 28px，不会比状态胶囊明显高，也不会把顶栏撑得更高。 */
+   字号也跟顶栏统一（--topbar-font）：数字靠字重 900 和白色区分，不再单独放大一号。
+   标签可能是一串昵称，给它一个上限 + 省略号，别把整组往两边撑。 */
 .timer {
   text-align:center;
   color:#fff;
@@ -115,14 +156,19 @@ button:disabled {
   background:#20242a;
 }
 .timer strong {
-  font-size:16px;
+  font-size:var(--topbar-font);
+  font-weight:900;
   line-height:1;
   display:block;
 }
 .timer span {
   color:#d8dedf;
-  font-size:11px;
+  text-overflow:ellipsis;
+  max-width:8em;
+  overflow:hidden;
+  font-size:var(--topbar-font);
   line-height:1;
+  white-space:nowrap;
 }
 .timer.danger {
   background:#b63e32;
@@ -133,90 +179,346 @@ button:disabled {
     transform:scale(1.03);
   }
 }
-/* 顶栏右侧按钮组：间距比主区域小一档。顶栏用 align-items:start 对齐，所以顶栏里那一个
-   下压 8px 让按钮的中线跟 Logo 方块（38px）对齐；其余地方（弹窗 / 规则卡片）的 .top-actions 不受影响。 */
+/* 顶栏右侧按钮组：间距比主区域小一档。顶栏纵向 align-items:center，按钮组和 Logo 方块（38px）
+   自然对齐，不再需要 margin-top 去凑。其余地方（弹窗 / 规则卡片）的 .top-actions 不受影响。 */
 .top-actions {
   flex-wrap:wrap;
   justify-content:flex-end;
   gap:6px;
   display:flex;
 }
+/* 顶栏里这一个是固定落在第 3 列的：中间那一组是绝对定位、不参与自动落格，
+   不写死列号它就会被自动排到第 2 列去。也不允许换行——换行会把顶栏撑高、把中间那组挤歪 */
 .topbar>.top-actions {
-  margin-top:8px;
-}
-/* 倒计时 + 状态胶囊：顶栏中间那一组，两行竖排、整体水平居中（绝对定位，以顶栏中线为轴）。
-   上：倒计时胶囊；下：一排状态胶囊。它不占网格列，所以 Logo 与按钮组依旧贴住左右两端，
-   顶栏高度由这一组决定。 */
-.topbar-status {
-  text-align:center;
-  flex-direction:column;
-  justify-content:center;
-  align-items:center;
-  gap:6px;
-  /* 居中但不许压到左右两端：窄桌面（901-1200px）时先裁胶囊尾部，别和 Logo / 按钮叠在一起。 */
-  max-width:min(100%, 70vw);
-  display:flex;
-  position:absolute;
-  top:0;
-  bottom:0;
-  left:50%;
-  transform:translateX(-50%);
-}
-/* 对局状态标签（当前 / 出牌机会 / 牌库 / 生成物 / 房间码 / 确认 …）：
-   从「独立占一行的 .room-panel」→「棋盘上方的信息带」→ 现在是倒计时正下方的一排小胶囊，
-   整排水平居中。两档优先级：.chip-primary（当前出手的人 / 出牌机会 / 牌库）深色文字 + 描边，
-   其余是灰底次要信息；整排 nowrap + overflow:hidden，宽度不够时从右端裁掉，越靠左越重要。 */
-.game-status {
   flex-wrap:nowrap;
+  grid-area:1/3/2/4;
+}
+/* 「管理 ▾」下拉：顶栏右侧只留 用户 / 排行榜 / 设置 三个按钮，联机与建房相关操作全收进这个菜单。
+   和 .account-menu 一样是「按钮 + 绝对定位浮层」，但 z-index 抬到 1000，避免被公告条 / 状态胶囊盖住。
+   菜单项按纯文字项做：不要 .btn 那条米色底和描边，只留 hover 变色，字号与顶栏按钮完全一致。 */
+.top-menu {
+  z-index:1000;
+  position:relative;
+}
+/* 触发按钮：「管理」/ 竖线 / 倒三角三件套用 flex 居中（靠 baseline 对齐会让三角看着偏下）。
+   字号 / 字重 / 字体族不在这里写：由上面那条 .topbar .btn:not(.account-chip) 统一给
+   （14px / 500 / inherit），所以「管理」和右边「排行榜 / 设置」拿到的是同一组声明。 */
+.top-menu-trigger {
   justify-content:center;
   align-items:center;
   gap:4px;
-  max-width:100%;
-  min-width:0;
-  overflow:hidden;
+  display:inline-flex;
+}
+/* 「管理」右侧、▾ 左侧那条浅灰细竖线：14px 高、1px 宽，靠 align-items:center 垂直居中；
+   左右各留 2px，加上 flex 的 gap 4px，视觉上离文字和三角都是 6px。 */
+.top-menu-sep {
+  align-self:center;
+  flex:0 0 auto;
+  width:0;
+  height:14px;
+  margin:0 2px;
+  border-left:1px solid rgba(0, 0, 0, .2);
+}
+/* 倒三角：默认朝下，展开时按钮带 .is-open，rotate(180deg) 变成朝上。
+   1) 形状：不用 ▾ 字符——U+25BE 是「小三角」，10px 下实测只有 4×3 像素（截图里就是个点），
+      所以直接用三条边框画一个实心倒三角：左右边框各 6px + 上边框 6px = 宽 12px、高 6px，
+      颜色跟随 currentColor，与字体无关，任何环境形状一致。
+      DOM 里那个 ▾ 保留当「CSS 没加载」的兜底，font-size:0 把它收掉。
+   2) 动画：transition 0.3s ease；又因为整个应用是 app.innerHTML 全量重渲、展开瞬间按钮是
+      新建的 DOM 节点（新建节点的初始样式不触发 transition），所以真正播动画的是下面这条
+      keyframes（插入即播放，同样 0.3s），transform + transition 负责节点被复用时的过渡。 */
+@keyframes top-menu-caret-flip {
+  from { transform:rotate(0deg); }
+  to { transform:rotate(180deg); }
+}
+.top-menu-caret {
+  flex:0 0 auto;
+  width:0;
+  height:0;
+  border-left:6px solid transparent;
+  border-right:6px solid transparent;
+  border-top:6px solid currentColor;
+  font-size:0;
+  line-height:0;
+  transition:transform .3s ease;
+}
+.top-menu-trigger.is-open .top-menu-caret,
+.status-trigger.is-open .top-menu-caret {
+  transform:rotate(180deg);
+  animation:top-menu-caret-flip .3s ease both;
+}
+.top-menu-popover {
+  -webkit-backdrop-filter:blur(16px);
+  backdrop-filter:blur(16px);
+  background:#fffcf6f7;
+  border:1px solid #20242a1a;
+  border-radius:12px;
+  gap:2px;
+  width:max-content;
+  /* 你说至少 160；实测原来就是 172，按 160 写反而变窄。这里取 200，菜单肉眼可见地比之前宽，
+     菜单项文字离左右边缘各 6 + 16 = 22px，不会再显得「贴边」。 */
+  min-width:200px;
+  padding:6px;
+  display:grid;
+  position:absolute;
+  top:calc(100% + 8px);
+  right:0;
+  z-index:1000;
+  box-shadow:0 18px 40px #20242a2b, 0 2px 6px #20242a1a;
+}
+/* 菜单项 = 纯文字项：把 .btn / .player-kick 的底色、描边、居中排版全部抹掉，
+   只留「铺满宽度 + 左对齐 + 10px/16px 的上下内边距 + 悬停变色」。
+   字体和「排行榜」按钮同一套：14px / 字重 500 / 字体族继承（三个值都来自同一组变量），
+   行高由 10px 内边距撑出来，不再用 min-height 兜。 */
+.top-menu-popover .btn,
+.top-menu-popover .player-kick {
+  justify-content:flex-start;
+  align-items:center;
+  text-align:left;
+  color:#252b31;
+  background:none;
+  border:0;
+  border-radius:8px;
+  width:100%;
+  padding:10px 16px;
+  font-size:var(--topbar-font);
+  font-family:inherit;
+  font-weight:var(--topbar-weight);
+  line-height:1.3;
+  transition:background-color .15s ease, color .15s ease;
   display:flex;
 }
-.game-status>span {
-  color:#4b545c;
+.top-menu-popover .btn:hover,
+.top-menu-popover .player-kick:hover {
+  background:#20242a14;
+}
+/* 「确认开始 / 再来一局」是菜单里的主操作：不铺满一块主题色，只用主题色文字 + 淡底。
+   字重也统一走 --topbar-weight（和别的菜单项一致），靠颜色而不是粗细拉开层次。 */
+.top-menu-popover .btn.primary {
+  color:var(--primary-theme-color,#226b70);
+  background:#226b7014;
+  font-weight:var(--topbar-weight);
+}
+.top-menu-popover .btn.primary:hover {
+  background:#226b7024;
+}
+/* 「打开 AI 建议」那一组是「推理强度 + 按钮」，在菜单里竖排，别横向把菜单撑宽。 */
+.top-menu-popover .ai-advice-controls {
+  flex-direction:column;
+  align-items:stretch;
+  gap:2px;
+  width:100%;
+}
+/* 推理强度这一行也按菜单项排：去掉外面那块紫色底和描边（和纯文字菜单混在一起太跳），
+   左内边距对齐别的菜单项（16px），下拉框自己留一条浅描边。 */
+.top-menu-popover .ai-level-label {
+  justify-content:space-between;
+  color:#252b31;
+  background:none;
+  border:0;
+  gap:10px;
+  padding:6px 16px;
+  font-size:var(--topbar-font);
+  font-weight:var(--topbar-weight);
+}
+.top-menu-popover .ai-level-label select {
+  background:#fff;
+  border:1px solid #20242a1f;
+  border-radius:8px;
+  min-height:30px;
+  font-size:var(--topbar-font);
+}
+.top-menu-popover .btn.ai {
+  color:#5d2c8c;
+  background:none;
+  border:0;
+  box-shadow:none;
+}
+.top-menu-popover .btn.ai:hover {
+  background:#5d2c8c14;
+}
+/* 破坏性操作（退出 / 退出房间 / 解散房间）：一条分割线隔开，文字保持红色，
+   但不要 .btn.danger 那块红底——菜单里红底太重，跟纯文字项混在一起会跳。 */
+.top-menu-danger {
+  grid-template-columns:1fr;
+  margin-top:6px;
+  padding-top:6px;
+  border-top:1px solid #20242a1a;
+  display:grid;
+}
+.top-menu-popover .top-menu-danger .btn,
+.top-menu-popover .top-menu-danger .player-kick {
+  color:#a4392c;
+  background:none;
+}
+.top-menu-popover .top-menu-danger .btn:hover,
+.top-menu-popover .top-menu-danger .player-kick:hover {
+  color:#8c2d22;
+  background:#b63e321a;
+}
+.top-menu-popover .muted {
+  padding:4px 16px 6px;
+  max-width:232px;
+  font-size:var(--topbar-font);
+  line-height:1.35;
+  white-space:normal;
+}
+/* 顶栏中列：只剩「倒计时 + ▾」一个触发器，绝对水平居中。
+   left:50% + translateX(-50%) 以 .topbar 的 padding box 为准（顶栏是 position:sticky，本身就是定位祖先），
+   左右 padding 对称，所以触发器中心正好落在屏幕中线上；原来走网格第 2 列、居中于左右两组之间，
+   实测偏左 38px（左侧 Logo 比右侧按钮组窄）。
+   绝对定位还有个正合意的副作用：左右两组再宽也挤不动它，不会被压扁或换行。
+   窄屏（≤860px）左右两组快贴到中线时，退回网格第 2 列居中（见文件末尾的 @media）。 */
+.topbar-status {
+  justify-content:center;
+  align-items:center;
+  min-width:0;
+  max-width:calc(100% - 16px);
   white-space:nowrap;
-  text-overflow:ellipsis;
-  background:#eee9e0;
+  display:flex;
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%, -50%);
+}
+/* 触发器 = 倒计时胶囊 + 倒三角，整块可点；展开时胶囊外面加一圈主题色描边。
+   它不挂 .btn：胶囊自己就是那块深色底，再套一层米色按钮底会变成「按钮里装按钮」。 */
+.status-menu {
+  z-index:1000;
+  min-width:0;
+  display:inline-flex;
+  position:relative;
+}
+/* 触发器的盒子 = 左边 18px 空白 + 胶囊 + 6px 间距 + 12px 三角。
+   左边那 18px 是「间距 + 三角」的镜像：整块绝对居中时，穿过屏幕中线的是胶囊中心，
+   而不是「胶囊 + 三角」这个合体的中点（否则胶囊会偏左 9px）。 */
+.status-trigger {
+  color:#20242a;
+  cursor:pointer;
+  background:none;
+  border:0;
+  gap:6px;
+  min-width:0;
+  max-width:100%;
+  padding:0 0 0 18px;
+  font:inherit;
+  align-items:center;
+  display:inline-flex;
+}
+.status-trigger:focus-visible .timer,
+.status-trigger.is-open .timer {
+  outline:2px solid #226b7066;
+  outline-offset:2px;
+}
+/* 中列被压到极限时先让出昵称的宽度（秒数 + 倒三角必须一直看得见）：
+   .timer 默认是 flex:0 0 auto 不收缩，这里改成可收缩，昵称自己带省略号。 */
+.topbar-status .timer {
+  flex:0 1 auto;
+  min-width:0;
+  overflow:hidden;
+}
+.topbar-status .timer span {
+  min-width:0;
+}
+/* 状态下拉：和「管理 ▾」下拉同一套外观（毛玻璃 / 圆角 / 阴影 / 1000 的层级），
+   区别只在定位——触发器在顶栏中间，所以浮层从胶囊正下方展开、以它为中心左右居中。
+   高度封顶 + 内部滚动：房间加对局全量状态最多十来行，不能让它往下盖掉半块棋盘。
+   宽度上限跟着视口走（100vw - 24px），窄屏不会顶出屏幕。 */
+.status-menu-popover {
+  -webkit-backdrop-filter:blur(16px);
+  backdrop-filter:blur(16px);
+  background:#fffcf6f7;
+  border:1px solid #20242a1a;
+  border-radius:12px;
+  gap:2px;
+  width:max-content;
+  min-width:212px;
+  max-width:min(340px, calc(100vw - 24px));
+  max-height:min(52vh, 380px);
+  padding:6px;
+  display:grid;
+  position:absolute;
+  top:calc(100% + 10px);
+  left:50%;
+  z-index:1000;
+  transform:translateX(-50%);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  box-shadow:0 18px 40px #20242a2b, 0 2px 6px #20242a1a;
+}
+/* 一条状态 = 左标签 + 右数值；没有数值的（进行中 / 已结束）只占一行文字。
+   行高 30px、内边距 4/12：比「管理」菜单项（10/16）更紧凑，因为这里可能有十来行，
+   按菜单项那种行高会把面板撑到 400px 以上，展开就盖住半块棋盘。 */
+.status-chip {
+  justify-content:space-between;
+  align-items:center;
+  color:#252b31;
+  border-radius:8px;
+  gap:14px;
+  min-height:30px;
+  padding:4px 12px;
+  font-size:var(--topbar-font);
+  font-weight:var(--topbar-weight);
+  line-height:1.3;
+  display:flex;
+}
+.status-chip-label {
+  color:#5b646c;
+  white-space:nowrap;
+}
+.status-chip-value {
+  color:#20242a;
+  white-space:nowrap;
+  font-weight:700;
+  font-variant-numeric:tabular-nums;
+}
+/* 第一梯队（状态 / 当前出手的人 / 出牌机会 / 牌库）：标签用深色、数值再加一档字重。
+   原来这里还有一条 2px 主题色细线（box-shadow:#226b7055）——每行都是圆角，
+   叠起来就是沿下拉左边缘的一串淡青「(」括号，看着像残留的绿条，已删掉。
+   区分梯队现在只靠字重和标签色，下拉里不再有任何绿/青色装饰。 */
+.status-chip.chip-primary .status-chip-label {
+  color:#20242a;
+}
+.status-chip.chip-primary .status-chip-value {
+  font-weight:800;
+}
+/* 房间码：整块浅青底 + 青色大字，是下拉里唯一「要念给别人听」的信息。
+   （原来还有一行 box-shadow:none 用来抵消 chip-primary 的左侧细线，线删了它也跟着删。） */
+.status-chip-code {
+  background:#e3f1ee;
+}
+.status-chip-code .status-chip-label,
+.status-chip-code .status-chip-value {
+  color:#195d62;
+}
+.status-chip-code .status-chip-value {
+  font-weight:900;
+  letter-spacing:.02em;
+}
+/* 专属房间号：和别处的房间码同一套金色（.room-code.reserved-room-code 的配色）。 */
+.status-chip-code.reserved-room-code .status-chip-value {
+  color:#b78208;
+}
+/* 徽章行（自定义 / 预设 / 决斗 / 算牌大战）：横排，放不下就折行。 */
+.status-chips {
+  flex-wrap:wrap;
+  align-items:center;
+  gap:4px;
+  padding:2px 12px 4px;
+  display:flex;
+}
+.status-chips .duel-badge {
   border-radius:999px;
   align-items:center;
   min-height:22px;
   padding:0 9px;
-  font-size:11px;
-  line-height:1;
+  font-size:var(--topbar-font);
   display:inline-flex;
 }
-/* 第一梯队：一眼要看到的三个数（当前出手的人 / 出牌机会 / 牌库），从灰底里浮出来。 */
-.game-status>span.chip-primary {
-  color:#20242a;
-  background:#fbf7f0;
-  font-weight:700;
-  box-shadow:inset 0 0 0 1px #20242a2e;
-}
-/* 决斗模式的彩色徽章：底色由 .duel-badge 决定，这里只把高度和字号拉齐成胶囊。 */
-.game-status>span.duel-badge {
-  color:#fff;
-  min-height:22px;
-  padding:0 9px;
-  font-size:11px;
-}
-/* 房间码是标签里唯一需要「一眼能念给别人听」的信息，给它一块底色，别混在灰标签里。 */
-.game-status .room-code {
-  color:#195d62;
-  background:#e3f1ee;
-  border-radius:999px;
-  flex:0 0 auto;
-  padding:4px 10px;
-  font-size:13px;
-  font-weight:900;
-  line-height:1;
-}
-/* 这一条只放得下一行：昵称后面那个 @用户名 换行会把整条顶高，这里整段去掉。 */
-.game-status br,
-.game-status .username-tag {
+/* 一行只放得下昵称：「当前」那一行的昵称后面还有 @用户名（renderPlayerName 里的 br + small），
+   会把行撑高一截，整段去掉。 */
+.status-menu-popover br,
+.status-menu-popover .username-tag {
   display:none;
 }
 .btn {
@@ -299,13 +601,15 @@ button:disabled {
   border-color:#842b2252;
 }
 /* 第一人称视角的对局布局，从上到下：
-   对手席横排 → [左侧出牌记录 | 棋盘] → 我的头像 → 手牌区。
-   倒计时和状态胶囊都在顶栏里（.topbar-status），所以这里没有额外的一行，
-   棋盘（溶液区 / 生成物区）直接顶到对手席下面。
-   对手席 / 我的头像 / 手牌区横跨两列，出牌记录的纵向范围固定，不再随人数伸缩。 */
+   对手席横排 → [左侧出牌记录 | 棋盘] → 手牌区（标题栏里就是我的席位卡）。
+   倒计时在顶栏中列、状态胶囊收在它的下拉里（.topbar-status / .status-menu-popover），
+   所以这里没有额外的一行，棋盘（溶液区 / 生成物区）直接顶到对手席下面。
+   「我的头像」原来单独占一行（行高 ~44px + 行间距 12px），现在并进手牌区顶部当 Header，
+   这一行从 grid 里删掉，省下的高度全部归棋盘。
+   对手席 / 手牌区横跨两列，出牌记录的纵向范围固定，不再随人数伸缩。 */
 .layout {
   grid-template-columns:260px minmax(0,1fr);
-  grid-template-rows:auto minmax(0,1fr) auto auto;
+  grid-template-rows:auto minmax(0,1fr) auto;
   gap:12px 16px;
   min-height:0;
   padding:16px clamp(10px,3vw,28px);
@@ -313,7 +617,6 @@ button:disabled {
   overflow:hidden;
 }
 .layout>.opponents-row,
-.layout>.self-seat,
 .layout>.handbar {
   grid-column:1/-1;
 }
@@ -479,13 +782,45 @@ button:disabled {
   overflow:hidden;
   display:block;
 }
-/* 我的头像：手牌区正上方、水平居中的一条紧凑卡，宽度只占屏幕中间 20%~30%。 */
+/* 我（admin）那条紧凑卡：现在渲染在手牌区内部的标题栏（.hand-head）里，不再单独占 .layout 的一行。
+   下面两条是它「自成一格」时的兜底：水平居中、限宽。 */
 .self-seat {
   justify-content:center;
+  min-width:0;
   display:flex;
 }
 .self-seat>.player {
   width:clamp(240px,26vw,480px);
+}
+/* 手牌区标题栏：席位卡（昵称 + 手牌 N · 积分 M，联机房间里还内联托管 / 退出）水平居中，
+   需要说明时在它右边紧挨着补一句（终局看的是哪家的牌 / 机器人正在算牌）。
+   原来「手牌区上方独立席位卡 + 手牌区里一条 .section-title」这两行，合并成这一行。 */
+.hand-head {
+  flex-wrap:wrap;
+  justify-content:center;
+  align-items:center;
+  gap:8px 12px;
+  min-width:0;
+  margin-bottom:8px;
+  display:flex;
+}
+.hand-head .self-seat {
+  justify-content:center;
+}
+/* 标题栏里的席位卡按内容收窄：不再吃 clamp(240px,26vw,480px) 那一档宽度，
+   否则宽屏上它会撑到 480px，居中就变成一整条横贯屏幕的长条了。 */
+.hand-head .self-seat>.player {
+  width:auto;
+  max-width:100%;
+  min-width:0;
+}
+/* 这句说明跟着席位卡一起居中（不设 margin-left:auto，否则自动外边距会盖掉 justify-content:center，
+   整组被推到右边）。窄屏放不下时随 flex-wrap 掉到第二行，照样居中。 */
+.hand-head-note {
+  color:#6e777f;
+  white-space:nowrap;
+  flex:0 0 auto;
+  font-size:12px;
 }
 .self-player {
   background:#f6fcf9;
@@ -525,14 +860,13 @@ button:disabled {
   border-color:#226b7042;
   font-weight:800;
 }
+/* 只剩「空席位」那张占位卡在用（红色 = 这个席位没人/没连上）；
+   在线绿点（.status-dot.online）随席位卡改版一起删掉了——卡上本来就有「在线/离线」文字。 */
 .status-dot {
   background:#b63e32;
   border-radius:999px;
   width:10px;
   height:10px;
-}
-.status-dot.online {
-  background:#2f8d5b;
 }
 /* 房间码：原来在 .room-identity-row 里，现在是对局状态标签里的第一个标签。 */
 .room-code {
@@ -671,6 +1005,15 @@ button:disabled {
   display:flex;
   overflow:auto;
 }
+/* 全局卡牌：宽高直接吃 :root 的 --card-width / --card-height，牌内字号吃 --card-font
+   （= 牌宽 × .2）。牌里每一个文字元素的字号都写成「牌宽 × 系数」的 calc，
+   不继承、不写死 px，所以 50px 的小牌和 80px 的大牌上，化学式 / 种类 / 角标 / 摞牌计数
+   全部严格等比、不会撑爆牌面；em 只留在 sub / sup 这类需要相对父级的行内元素上。
+   系数换算（对照改造前 76×96、12px 基准的那套）：
+     化学式  .224  → 76px 牌 17.0px、50px 牌 11.2px（最长 SiO₃²⁻ 单行放得下）
+     种类    .14   → 76px 牌 10.6px、50px 牌 7.0px（「阳离子 · +2」不折行）
+     角标    .12   → 76px 牌 9.1px、50px 牌 6.0px
+     摞牌计数 .15   → 76px 牌 11.4px、50px 牌 7.5px */
 .card {
   color:#20242a;
   background:#fff;
@@ -678,10 +1021,11 @@ button:disabled {
   border-radius:8px;
   align-content:space-between;
   gap:6px;
-  width:76px;
-  height:96px;
-  min-height:96px;
-  padding:9px 8px;
+  width:var(--card-width);
+  height:var(--card-height);
+  min-height:var(--card-height);
+  font-size:var(--card-font);
+  padding:calc(var(--card-width) * .118) var(--card-inset);
   display:grid;
   position:relative;
   box-shadow:0 8px 18px #20242a14;
@@ -691,24 +1035,27 @@ button:disabled {
   white-space:nowrap;
   background:#20242a;
   border-radius:4px;
-  padding:2px 4px;
-  font-size:9px;
+  padding:calc(var(--card-width) * .026) calc(var(--card-width) * .052);
+  font-size:calc(var(--card-width) * .12);
   font-weight:750;
   line-height:1;
   position:absolute;
-  top:5px;
-  right:5px;
+  top:calc(var(--card-width) * .065);
+  right:calc(var(--card-width) * .065);
 }
+/* 同名牌摞成一叠：整摞宽度、后面几层的尺寸、错位间距全部从 --card-width / --card-height 推，
+   牌变小摞也跟着小，不会出现「摞比单张矮一截 / 露出白边」。
+   --stack-dx = 牌宽 × .156（76px 牌上是原来的 12px）。 */
 .card-stack {
-  --stack-dx:12px;
+  --stack-dx:calc(var(--card-width) * .156);
   font:inherit;
   cursor:pointer;
-  width:calc(76px + (var(--stack-size,1) - 1) * var(--stack-dx));
+  width:calc(var(--card-width) + (var(--stack-size,1) - 1) * var(--stack-dx));
   background:0 0;
   border:0;
   flex:none;
-  height:96px;
-  min-height:96px;
+  height:var(--card-height);
+  min-height:var(--card-height);
   margin:0;
   padding:0;
   display:block;
@@ -720,23 +1067,23 @@ button:disabled {
   background:#fff;
   border:1px solid #20242a29;
   border-radius:8px;
-  width:76px;
-  height:96px;
+  width:var(--card-width);
+  height:var(--card-height);
   position:absolute;
   top:0;
   box-shadow:0 8px 18px #20242a14;
 }
 .card-stack.cation .stack-layer {
-  border-top:5px solid #b63e32;
+  border-top:var(--card-top-bar) solid #b63e32;
 }
 .card-stack.anion .stack-layer {
-  border-top:5px solid #226b70;
+  border-top:var(--card-top-bar) solid #226b70;
 }
 .card-stack.function .stack-layer {
-  border-top:5px solid #6b5aa9;
+  border-top:var(--card-top-bar) solid #6b5aa9;
 }
 .card-stack.special .stack-layer {
-  border-top:5px solid #c6972f;
+  border-top:var(--card-top-bar) solid #c6972f;
 }
 .card-stack .stack-top {
   z-index:21;
@@ -746,16 +1093,18 @@ button:disabled {
   top:0;
   left:0;
 }
+/* 摞牌左上角的「3×」计数：.card-stack 自己 font:inherit，父级字号和牌没关系，
+   所以这里必须显式按牌宽算，否则牌缩小了计数还会是 16px 的 em 结果。 */
 .card-stack .stack-count {
   z-index:22;
   color:#20242a;
   pointer-events:none;
-  font-size:11px;
+  font-size:calc(var(--card-width) * .15);
   font-weight:850;
   line-height:1.2;
   position:absolute;
-  top:3px;
-  left:6px;
+  top:calc(var(--card-width) * .04);
+  left:calc(var(--card-width) * .078);
 }
 .card.selected {
   box-shadow:inset 0 0 0 2px #20242a,0 8px 18px #20242a14;
@@ -773,20 +1122,60 @@ button:disabled {
   outline:2px solid #8b4cc7;
   box-shadow:0 0 0 3px #8b4cc729,0 8px 18px #20242a14;
 }
-.filter-card {
-  border-top:5px solid #20242a;
+/* 可反应 / 可出手牌高亮：哪些牌带这个类由 app.ts 的 playableHandCards 决定，
+   总开关是 localStorage.ionStormLegalHighlight。
+   做法是主题色外发光 + 缓慢呼吸，浅色背景上也能一眼挑出来，刻意不用纯白边框。
+   发光画在 ::after 上而不是直接改 .card 的 box-shadow，所以和 .selected 的内描边、
+   .same-card-hint 的灰框、.ai-suggested 的紫框、.dealing-card 的入场动画都不会互相覆盖。
+   轮廓色混了 20% 墨色（#20242a 是牌面正文色），用户把主题色改成接近白色时边框依然看得见。
+   .card 是 button + display:grid，伪元素绝对定位后不参与栅格，纯粹是画出来的一圈光。 */
+.card-playable-highlight::after {
+  content:"";
+  pointer-events:none;
+  border-radius:8px;
+  position:absolute;
+  inset:0;
+  z-index:30;
+  /* 静态兜底：不支持 color-mix 的浏览器（Chrome < 111）会把下面 keyframes 里那条 box-shadow
+     整条丢弃，于是停在这条上——仍然是主题色双环 + 一层墨色淡晕，只是不呼吸。 */
+  box-shadow:0 0 0 2px var(--primary-theme-color,#226b70),0 0 0 calc(var(--card-width) * .1) #20242a1f;
+  animation:card-playable-breathe 1.9s ease-in-out infinite;
 }
+@keyframes card-playable-breathe {
+  0%,100% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--primary-theme-color,#226b70) 80%, #20242a),
+      0 0 calc(var(--card-width) * .16) color-mix(in srgb, var(--primary-theme-color,#226b70) 42%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--primary-theme-color,#226b70) 92%, #20242a),
+      0 0 calc(var(--card-width) * .3) calc(var(--card-width) * .02) color-mix(in srgb, var(--primary-theme-color,#226b70) 64%, transparent);
+  }
+}
+/* 系统开了「减少动效」时保留静态发光，只停呼吸。 */
+@media (prefers-reduced-motion: reduce) {
+  .card-playable-highlight::after {
+    animation:none;
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--primary-theme-color,#226b70) 88%, #20242a),
+      0 0 calc(var(--card-width) * .24) color-mix(in srgb, var(--primary-theme-color,#226b70) 56%, transparent);
+  }
+}
+/* 牌面化学式：字号 = 牌宽 × .224（改造前 76px 牌上的 17px 与它同比例），
+   左右留白吃 --card-inset，牌缩小时间距一起收窄，最长的那几个离子式不会折行。
+   垂直位置仍按自己的字号上移（-.8235em），所以小牌上化学式也稳稳压在牌的上半部。 */
 .card .formula {
   text-align:center;
   word-break:break-word;
-  font-size:17px;
+  font-size:calc(var(--card-width) * .224);
   font-weight:850;
   line-height:1.12;
   position:absolute;
   top:50%;
-  left:8px;
-  right:8px;
-  transform:translateY(calc(-50% - 14px));
+  left:var(--card-inset);
+  right:var(--card-inset);
+  transform:translateY(calc(-50% - .8235em));
 }
 .card .formula sub,.card .formula sup,.action-btn sub,.action-btn sup {
   font-size:.68em;
@@ -801,23 +1190,23 @@ button:disabled {
 .card .kind {
   text-align:center;
   color:#5f6971;
-  font-size:11px;
+  font-size:calc(var(--card-width) * .14);
   position:absolute;
-  bottom:8px;
-  left:8px;
-  right:8px;
+  bottom:calc(var(--card-width) * .1);
+  left:var(--card-inset);
+  right:var(--card-inset);
 }
 .card.cation {
-  border-top:5px solid #b63e32;
+  border-top:var(--card-top-bar) solid #b63e32;
 }
 .card.anion {
-  border-top:5px solid #226b70;
+  border-top:var(--card-top-bar) solid #226b70;
 }
 .card.function {
-  border-top:5px solid #6b5aa9;
+  border-top:var(--card-top-bar) solid #6b5aa9;
 }
 .card.special {
-  border-top:5px solid #c6972f;
+  border-top:var(--card-top-bar) solid #c6972f;
 }
 /* 牌背：AI 手牌隐藏时（renderHandbar 的 hideHand → __hidden__ → renderCard 早退分支）唯一的牌背渲染点。
    原来是一块 #20242a 的纯色底，现在换成图片。background-origin 默认是 padding-box、background-clip
@@ -829,47 +1218,47 @@ button:disabled {
   background:#20242a url("/Card-back.png") center / cover no-repeat;
 }
 .card.custom-ion {
-  border-top:5px solid var(--card-top-color,#b63e32);
+  border-top:var(--card-top-bar) solid var(--card-top-color,#b63e32);
 }
 .card.custom-operation {
-  border-top:5px solid var(--card-top-color,#6b5aa9);
+  border-top:var(--card-top-bar) solid var(--card-top-color,#6b5aa9);
 }
 .card.custom-special {
-  border-top:5px solid var(--card-top-color,#c6972f);
+  border-top:var(--card-top-bar) solid var(--card-top-color,#c6972f);
 }
 .card.custom-generic {
-  border-top:5px solid var(--card-top-color,#8a8f98);
+  border-top:var(--card-top-bar) solid var(--card-top-color,#8a8f98);
 }
 .card-stack.custom-ion .stack-layer {
-  border-top:5px solid var(--card-top-color,#b63e32);
+  border-top:var(--card-top-bar) solid var(--card-top-color,#b63e32);
 }
 .card-stack.custom-operation .stack-layer {
-  border-top:5px solid var(--card-top-color,#6b5aa9);
+  border-top:var(--card-top-bar) solid var(--card-top-color,#6b5aa9);
 }
 .card-stack.custom-special .stack-layer {
-  border-top:5px solid var(--card-top-color,#c6972f);
+  border-top:var(--card-top-bar) solid var(--card-top-color,#c6972f);
 }
 .card-stack.custom-generic .stack-layer {
-  border-top:5px solid var(--card-top-color,#8a8f98);
+  border-top:var(--card-top-bar) solid var(--card-top-color,#8a8f98);
 }
 .card-badges {
   z-index:23;
   pointer-events:none;
   flex-direction:column;
   align-items:flex-end;
-  gap:3px;
+  gap:calc(var(--card-width) * .04);
   display:flex;
   position:absolute;
-  top:5px;
-  right:5px;
+  top:calc(var(--card-width) * .065);
+  right:calc(var(--card-width) * .065);
 }
 .card-badges .card-badge,.card-badges .uranium-life {
   color:#fff;
   white-space:nowrap;
   background:#20242a;
   border-radius:4px;
-  padding:2px 4px;
-  font-size:9px;
+  padding:calc(var(--card-width) * .026) calc(var(--card-width) * .052);
+  font-size:calc(var(--card-width) * .12);
   font-weight:750;
   line-height:1;
   position:static;
@@ -922,12 +1311,13 @@ button:disabled {
 }
 /* 放大预览：外面这个定尺容器兜住 transform 之后的视觉尺寸（transform 不参与布局，
    容器得自己留出空位，否则窗子会算矮）。里面是 renderCard(card,false) 出的 disabled 按钮，
-   这里把 button:disabled 的 45% 透明度改回来，并让它不接指针事件。 */
+   这里把 button:disabled 的 45% 透明度改回来，并让它不接指针事件。
+   容器尺寸跟着全局牌尺寸走：牌宽 × 1.15（下面 scale 的倍数），牌变小预览框一起变小。 */
 .card-action-flyout .flyout-preview {
   flex:none;
   place-items:center;
-  width:88px;
-  height:110px;
+  width:calc(var(--card-width) * 1.15);
+  height:calc(var(--card-height) * 1.15);
   display:grid;
 }
 .card-action-flyout .flyout-preview-card {
@@ -1420,21 +1810,75 @@ button:disabled {
   font-size:13px;
   display:block;
 }
-/* 手牌区：单行手牌时不要撑出一大片空白，上限交给下面各断点按「两行牌」算。 */
+/* 手牌区：高度由里面的牌撑开。上限不写在这里，而是挂在 .hand-layout .card-grid 上
+   （= 两排牌 + 20px，再多的部分在网格内部纵向滚动），这里只保一个下限：
+   一行牌高 + 标题栏 + 上下内边距，牌变小手牌区跟着矮，省下的高度全归棋盘。
+   故意不写 max-height：标题栏偶尔会折成两行，写死上限就会把网格底部的滚动条切掉。 */
 .handbar {
   z-index:0;
   background:#fffcf6eb;
   border-top:1px solid #20242a1f;
-  min-height:0;
+  min-height:calc(var(--card-height) + 90px);
   padding:12px clamp(10px,3vw,28px) 16px;
   position:relative;
 }
-/* 手牌区：合法操作列下线后只剩一列，手牌占满整行、整块居中。 */
+/* 手牌区：合法操作列下线后只剩一列，手牌占满整行、整块居中。
+   牌的尺寸 / 字号不在这里单独定义 —— 全部走 :root 的 --card-width / --card-height /
+   --card-font（见文件顶部那组变量），所以手牌和溶液区 / 生成物区永远是同一个尺码：
+   小窗一起缩到 50×70，大窗一起长到 80×112，不会再出现「手牌缩了、棋盘上的牌没缩」。 */
 .hand-layout {
   grid-template-columns:minmax(0,1fr);
   align-items:stretch;
   gap:12px;
   display:grid;
+}
+/* 手牌链路上的每一层都允许收缩到 0（窄屏 .layout / .hand-layout 是 1fr = minmax(auto,1fr)）：
+   即使折行，一行牌加间距的宽度也不该把整页顶宽，这里留一道兜底。 */
+.handbar,
+.hand-layout,
+.hand-layout>div {
+  min-width:0;
+}
+/* 手牌：多行排列 + 纵向滚动，双管齐下（牌本身已经随 --card-width 缩到 50-80px）。
+   第一排塞满就自动折到第二排（flex-wrap:wrap），整排水平居中（justify-content:center），
+   行从顶部往下排（align-content:flex-start），牌与牌之间 6px（gap）。
+   align-items:flex-start 不能省：默认的 stretch 会把牌拉到整行高度，--card-height 就失效了。
+   限高 = 两排牌 + 20px（.card-grid 是 border-box，含上下各 4px 内边距，所以正好两行零一点）；
+   第三行起在网格内部纵向滚动：横向 overflow-x:hidden 彻底关掉，纵向 overflow-y:auto 打开，
+   滚动不传给整页（overscroll-behavior:contain）。
+   滚动条做细做淡：scrollbar-width / scrollbar-color 给 Firefox 和 Chrome 121+，
+   下面几条 ::-webkit-scrollbar 给 WebKit —— 8px、半透明、悬停加深。
+   四周 4px 内边距是给选中 / AI 建议那圈描边留的，否则会被 overflow 裁掉。 */
+.hand-layout .card-grid {
+  flex:auto;
+  width:100%;
+  max-height:calc(var(--card-height) * 2 + 20px);
+  flex-wrap:wrap;
+  justify-content:center;
+  align-content:flex-start;
+  align-items:flex-start;
+  gap:6px;
+  padding:4px;
+  display:flex;
+  overflow-x:hidden;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-width:thin;
+  scrollbar-color:#20242a33 transparent;
+}
+.hand-layout .card-grid::-webkit-scrollbar {
+  width:8px;
+  height:8px;
+}
+.hand-layout .card-grid::-webkit-scrollbar-track {
+  background:0 0;
+}
+.hand-layout .card-grid::-webkit-scrollbar-thumb {
+  background:#20242a33;
+  border-radius:999px;
+}
+.hand-layout .card-grid::-webkit-scrollbar-thumb:hover {
+  background:#20242a59;
 }
 .opening-exchange-wait {
   grid-column:1/-1;
@@ -2181,30 +2625,73 @@ button:disabled {
   height:44px;
   min-height:44px;
 }
+/* 昵称可能很长，这里给它一个上限 + 省略号：右侧按钮组的总宽度必须可预期，
+   否则「管理」这一组会把顶栏中列（倒计时触发器）挤到没地方站。 */
 .account-chip {
+  justify-content:center;
+  align-items:center;
+  max-width:120px;
+  min-width:0;
+  overflow:hidden;
   font-weight:800;
+  display:inline-flex;
+}
+.account-chip>span {
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  overflow:hidden;
 }
 .account-menu {
   z-index:30;
   position:relative;
 }
+/* 账号菜单和「管理」菜单是同一个顶栏里的两个下拉，外观必须是同一套：
+   圆角 / 间距 / 毛玻璃底色对齐 .top-menu-popover，菜单项同样是「纯文字项 + hover 变色」。 */
 .account-menu-popover {
+  -webkit-backdrop-filter:blur(16px);
+  backdrop-filter:blur(16px);
   z-index:120;
-  background:#fffdf8;
-  border:1px solid #20242a24;
-  border-radius:8px;
-  gap:6px;
+  background:#fffcf6f7;
+  border:1px solid #20242a1a;
+  border-radius:12px;
+  gap:2px;
   width:max-content;
-  min-width:136px;
-  padding:8px;
+  min-width:148px;
+  padding:6px;
   display:grid;
   position:absolute;
   top:calc(100% + 8px);
   right:0;
-  box-shadow:0 16px 36px #20242a33;
+  box-shadow:0 18px 40px #20242a2b, 0 2px 6px #20242a1a;
 }
+/* 菜单项：抹掉 .btn 的米色底和描边，字号跟顶栏按钮同一个变量（起始界面的账号菜单也用它）。
+   内边距 / 字重 / 悬浮色和 .top-menu-popover 的菜单项保持一致，两个下拉看起来是同一套。 */
 .account-menu-popover .btn {
+  justify-content:flex-start;
+  align-items:center;
+  text-align:left;
+  color:#252b31;
+  background:none;
+  border:0;
+  border-radius:8px;
   width:100%;
+  padding:10px 16px;
+  font-size:var(--topbar-font);
+  font-family:inherit;
+  font-weight:var(--topbar-weight);
+  line-height:1.3;
+  transition:background-color .15s ease, color .15s ease;
+  display:flex;
+}
+.account-menu-popover .btn:hover {
+  background:#20242a14;
+}
+.account-menu-popover .btn.danger {
+  color:#a4392c;
+}
+.account-menu-popover .btn.danger:hover {
+  color:#8c2d22;
+  background:#b63e321a;
 }
 .global-settings-save {
   margin-top:14px!important;
@@ -2580,14 +3067,12 @@ button:disabled {
   box-shadow:0 18px 42px #c6972f52;
 }
 @media (width>=901px) {
-  /* 手牌区：合法操作列下线后，这里只需要装「最多两行牌」。
-     .card 高 96px + 行间距 8px → 两行 = 200px，正好落在 160-200px 区间；
-     再加上标题一行（约 20px）、区块间距 8px 和上下内边距 28px，所以外层封顶 264px。
-     多出来的行不撑高面板，而是在牌区内部纵向滚动；空出来的高度全部给棋盘（.layout 的 1fr 行）。 */
+  /* 手牌区（宽屏）：标题栏固定在上面，下面的手牌网格多行排列、自己纵向滚动。
+     手牌区高度 = 标题栏（含下边距）≈50px + 网格上限 calc(var(--card-height) * 2 + 20px)
+     + 手牌区上下内边距 28px；牌变小这一块跟着矮，省下来的高度全部给棋盘（.layout 的 1fr 行）。
+     网格的限高、折行和滚动都写在 .hand-layout .card-grid 那一条里，这里只负责竖着摆。 */
   .handbar {
     flex-direction:column;
-    max-height:264px;
-    min-height:0;
     display:flex;
     overflow:hidden;
   }
@@ -2603,19 +3088,27 @@ button:disabled {
     min-height:0;
     display:flex;
   }
-  /* 手牌整体居中：一排牌横着居中、不足两行时竖着也居中。
-     max-height 卡在两行牌的高度上（200px = 96×2 + 8），超过就在这块区域里滚动，不再往下撑。
-     取 40vh 而不是 32vh：视口高不足 625px 时 32vh 会小于两行，第二行被硬切掉一截。
-     safe 关键字是关键：内容装不下时对齐退回 start；不写 safe 的话居中会让起始侧也溢出，
-     而 scrollTop / scrollLeft 最小是 0，最前面那几张永远滚不到、点不到。
-     不支持 safe 的浏览器会丢掉整条声明，回落到 .card-grid 的 align-content:flex-start，同样安全。 */
-  .hand-layout .card-grid {
-    justify-content:safe center;
-    align-content:safe center;
-    flex:auto;
-    max-height:min(200px,40vh);
-    min-height:0;
-    overflow-y:auto;
+}
+/* 状态胶囊收进下拉之后，顶栏在任何宽度下都是一行三列，这一档不再需要「拆成三行」：
+   只把 Logo 副标题（130 张化学反应牌 · 本地与联机）收掉，把宽度让给中间的触发器和右侧按钮组。
+   这一块只改顶栏自己的排布，页面其它部分（.layout / 手牌 / 棋盘）仍旧按 900px 那个断点走。 */
+@media (width<=1100px) {
+  .topbar {
+    gap:8px;
+  }
+  .brand span {
+    display:none;
+  }
+}
+/* 窄屏兜底：Logo + 右侧按钮组几乎吃到中线时（临界值实测约 750px，这里留足余量），
+   绝对居中会把触发器压到按钮上。这一档退回「网格第 2 列」——在 Logo 与按钮组之间的
+   剩余空间里居中，也就是上一版的行为，小窗依旧不折行、不重叠。 */
+@media (width<=860px) {
+  .topbar-status {
+    position:static;
+    transform:none;
+    max-width:none;
+    grid-area:1/2/2/3;
   }
 }
 @media (width<=900px) {
@@ -2623,41 +3116,6 @@ button:disabled {
     height:auto;
     min-height:100dvh;
     overflow:visible;
-  }
-  /* 窄屏放不下「绝对居中的两行」，这一组拆回网格里的三行：
-     第 1 行 品牌 + 倒计时 / 第 2 行 状态胶囊（横向滚动）/ 第 3 行 按钮组。
-     计时和状态是 .topbar-status 的子元素，用 display:contents 拆开让它们各自落格。 */
-  .topbar {
-    grid-template-columns:minmax(0,1fr) auto;
-    align-items:center;
-  }
-  .topbar-status {
-    position:static;
-    transform:none;
-    display:contents;
-  }
-  .topbar>.brand {
-    grid-area:1/1/2/2;
-  }
-  .topbar>.topbar-status>.timer {
-    grid-area:1/2/2/3;
-  }
-  .top-actions {
-    grid-area:3/1/4/3;
-    justify-content:flex-start;
-    margin-top:0;
-  }
-  /* 状态胶囊在窄屏不再裁剪：横向滚动，短标签也不会被压扁，右端淡出提示还有内容。 */
-  .game-status {
-    overscroll-behavior-inline:contain;
-    scrollbar-width:none;
-    -webkit-mask-image:linear-gradient(90deg, #000 calc(100% - 12px), #0000);
-    mask-image:linear-gradient(90deg, #000 calc(100% - 12px), #0000);
-    grid-area:2/1/3/3;
-    overflow-x:auto;
-  }
-  .game-status>span {
-    flex:0 0 auto;
   }
   .layout,.board,.hand-layout,.setup-grid,.modal-grid,.rules-editor-dialog .rules-display-settings {
     grid-template-columns:1fr;
@@ -2707,8 +3165,13 @@ button:disabled {
     flex:0 0 168px;
     max-width:none;
   }
+  /* 窄屏标题栏里的席位卡仍然是按内容收窄的（.hand-head .self-seat>.player 权重更高，
+     压得住上面这条 width:100%），只是把标题栏的下边距再收 2px，多留一行牌的位置。 */
   .self-seat>.player {
     width:100%;
+  }
+  .hand-head {
+    margin-bottom:6px;
   }
   .log {
     min-height:0;
@@ -2729,52 +3192,17 @@ button:disabled {
     height:52px;
     box-shadow:0 0 0 5px #226b7014;
   }
-  /* 只写 min-height 盖不住基础规则的 height:96px，必须把 height 一起改掉，
-     否则牌实际还是 96px 高，上面按 88px 算的两行上限（182px）就装不下第二行。 */
-  .card {
-    width:68px;
-    height:88px;
-    min-height:88px;
-  }
-  .card .formula {
-    font-size:15px;
-    transform:translateY(calc(-50% - 16.5px));
-  }
-  /* 叠牌堆也必须跟着降到 88px：.card-grid 是 flex-wrap，每一行的高度取该行最高的那个元素，
-     只要一行里有一摞牌还是 96px，两行就变成 96×2+6=198px，又把第二行顶出 182px 的上限。
-     .stack-layer 是绝对定位的"后面几张"，高度得和上面的牌一致，否则会露出 8px 白边。 */
-  .card-stack {
-    --stack-dx:9px;
-    width:calc(68px + (var(--stack-size,1) - 1) * var(--stack-dx));
-    height:88px;
-    min-height:88px;
-  }
-  .card-stack .stack-layer {
-    width:68px;
-    height:88px;
-  }
-  .card-stack .stack-count {
-    font-size:10px;
-    left:5px;
-  }
+  /* 窄屏不再给牌单独一套尺寸：--card-width 的 6vw 在 900px 以下早就落进 50-54px 这一档，
+     再叠一层 68×88 只会把刚缩下去的牌又顶回去，溶液区 / 生成物区反而比手牌还大。
+     现在溶液区 / 生成物区 / 手牌 / 换牌弹窗全部继续吃 :root 那组变量，
+     窄屏就是整副牌最小的那一档，格子里的牌和牌内文字等比例缩。 */
   .card-grid {
     gap:6px;
   }
+  /* 手牌区在窄屏只是把内边距收窄：多行排列 + 两排限高（card-height × 2 + 20px）+ 纵向滚动
+     全部沿用 .hand-layout .card-grid 那一条，这里不再覆盖。 */
   .handbar {
-    min-height:0;
     padding:10px;
-  }
-  /* 窄屏牌面高度 88px（下面 .card / .card-stack 的 height 一起改了才真成立）：
-     两行 = 88×2 + 6(行间距) = 182px，但 * 是 border-box，这个容器自己还有
-     padding:2px 2px 6px，所以上限要写成 182 + 8 = 190px 才能完整露出两行，否则第二行还差 8px。
-     safe 关键字：装不下时退回 start，否则居中会把第一行推到滚动区上方，再也滚不回来。 */
-  .handbar .hand-layout>div:first-child .card-grid {
-    overscroll-behavior:contain;
-    justify-content:safe center;
-    align-content:safe center;
-    max-height:min(190px,34dvh);
-    padding:2px 2px 6px;
-    overflow-y:auto;
   }
   /* 保留给重新设计后的合法操作栏（当前渲染已被跳过）。 */
   .handbar .actions {
@@ -2896,9 +3324,13 @@ button:disabled {
   .rules-deck-table th,.deal-fixed-table th,.rules-deck-table td:first-child small,.deal-fixed-table td:first-child small,.rules-readonly-deck-table th,.rules-readonly-deck-table td,.preset-table td:nth-child(2),.preset-table td:nth-child(3),.preset-table .btn {
     font-size:14px;
   }
+  /* 手机上顶栏仍然是一行三列：Logo 方块 / 倒计时触发器 / 按钮组。
+     原来这里把按钮组拆成单独一行、还开了横向滚动——那样既会折行、又会裁掉绝对定位的下拉。
+     现在四件套按实际宽度压进一行：Logo 只留方块、按钮内边距和昵称宽度各收一点；
+     这一行不再有 overflow，两个下拉恢复成相对各自按钮的绝对定位。 */
   .topbar {
-    grid-template-columns:minmax(0,1fr) auto;
-    gap:8px;
+    grid-template-columns:auto minmax(0,1fr) auto;
+    gap:6px;
     padding:9px 10px;
   }
   .brand {
@@ -2910,10 +3342,9 @@ button:disabled {
     width:34px;
     height:34px;
   }
-  .brand h1 {
-    font-size:18px;
-  }
-  .brand span {
+  /* Logo 只留方块：标题 + 副标题整块收掉（副标题在 1100 那档已经收过一次）。
+     标题那 70 多像素让出来，正好够按钮组不折行。 */
+  .brand>div {
     display:none;
   }
   .timer {
@@ -2921,35 +3352,50 @@ button:disabled {
     min-width:0;
     padding:5px 11px;
   }
-  .timer strong {
-    font-size:15px;
-  }
   .topbar>.top-actions {
-    overscroll-behavior-inline:contain;
-    scrollbar-width:none;
     flex-wrap:nowrap;
-    grid-column:1/-1;
-    justify-content:flex-start;
-    gap:6px;
-    width:calc(100vw - 20px);
-    padding-bottom:1px;
-    overflow-x:auto;
+    justify-content:flex-end;
+    gap:4px;
+    min-width:0;
   }
-  .topbar>.top-actions::-webkit-scrollbar {
-    display:none;
+  .topbar>.top-actions .btn {
+    padding-inline:11px;
   }
-  .topbar>.top-actions>* {
-    flex:none;
+  /* 「用户 / 排行榜 / 设置 / 管理」四件套要挤进同一行：间隙压到 4px、昵称再收窄一点；
+     420px 以下还有一档更紧的（见下面那条 @media）。 */
+  .topbar>.top-actions .account-chip {
+    max-width:100px;
   }
-  .account-menu-popover {
-    /* 窄屏顶栏现在是三行（品牌+计时 / 状态标签 / 按钮组），浮层要落在按钮组下面。 */
-    top:max(160px, calc(env(safe-area-inset-top) + 152px));
-    right:auto;
-    left:max(10px, env(safe-area-inset-left));
-    z-index:200;
+  /* 状态下拉在窄屏跟着视口收窄，别顶出屏幕。 */
+  .status-menu-popover {
     min-width:176px;
     max-width:calc(100vw - 20px);
-    position:fixed;
+  }
+  /* 触屏上菜单项要够高：44px 的点击区，左右内边距和桌面版一样是 16px，文字不会贴边。 */
+  .top-menu-popover .btn,
+  .top-menu-popover .player-kick {
+    min-height:44px;
+    padding:10px 16px;
+  }
+  .account-menu-popover .btn {
+    min-height:44px;
+    padding:10px 16px;
+  }
+  /* 420px 以下：「管理」那一组还是会顶到行尾，间隙 / 昵称 / 按钮内边距再各收一点；
+     倒计时只留秒数——谁在出牌下拉里能看到，这一格是最后还能让出宽度的地方。 */
+  @media (width<=420px) {
+    .topbar>.top-actions {
+      gap:2px;
+    }
+    .topbar>.top-actions .btn {
+      padding-inline:10px;
+    }
+    .topbar>.top-actions .account-chip {
+      max-width:84px;
+    }
+    .status-trigger .timer span {
+      display:none;
+    }
   }
   .btn,.action-btn,.player-kick {
     min-height:44px;
@@ -2970,16 +3416,11 @@ button:disabled {
     width:100%;
     margin-left:0;
   }
-  /* 手机竖屏：状态标签横向排布本身就够挤了，去掉右端淡出；高度只比桌面宽裕一点，
-     别再往上顶（整条顶栏还是三行：品牌 + 倒计时 / 胶囊 / 按钮组）。 */
-  .game-status {
-    -webkit-mask-image:none;
-    mask-image:none;
-    gap:4px;
-  }
-  .game-status>span {
-    min-height:26px;
-    padding:0 9px;
+  /* 触屏状态下拉的每一行抬高到 40px：竖排列表要能用手指点准，
+     桌面那档 30px 只适合鼠标（下拉本身在手机上不再是横向滚动条，不会被裁掉）。 */
+  .status-chip {
+    min-height:40px;
+    padding:6px 12px;
   }
   .modal-backdrop {
     place-items:center;
@@ -3389,8 +3830,10 @@ button:disabled {
   display:none;
 }
 /* 彻底隐藏所有对局内的面板与区域，只留背景幕布：
-   .sidebar（出牌记录 / 牌库 / 弃牌堆）、.opponents-row（对手席）、.self-seat（我的头像）、
-   .handbar（手牌 / 动作筛选）、.board 及 .zone（「溶液区」「生成物区」，
+   .sidebar（出牌记录 / 牌库 / 弃牌堆）、.opponents-row（对手席）、
+   .handbar（手牌区，含标题栏里我的席位卡 .self-seat——它现在挂在 .handbar 内部，
+   起始界面由 .handbar 一起隐藏，下面那行 .self-seat 是防止以后挪出来时的兜底）、
+   .board 及 .zone（「溶液区」「生成物区」，
    .zone.panel 的半透明底色就是之前屏幕中部那条白色长条）。
    顶栏（含倒计时和状态胶囊）在起始界面走的是另一支模板，本来就不输出。 */
 .start-screen .sidebar,

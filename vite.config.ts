@@ -18,6 +18,16 @@ export default defineConfig({
         target: "http://127.0.0.1:3000",
         changeOrigin: true,
       },
+      // WebSocket 也必须代理，否则前端永远连不上：
+      // online.ts 连的是 `${location.host}/ws`，dev 下就是 ws://localhost:5173/ws。
+      // 没这条（或不写 ws:true）时 Upgrade 请求落在 Vite 自己身上，后端根本收不到握手 →
+      // onerror/onclose → 前端弹「WebSocket 不可用」并降级成 HTTP 轮询。
+      // target 写 http:// 就行，ws:true 时 http-proxy 会按 Upgrade 请求自己升级到后端。
+      "/ws": {
+        target: "http://127.0.0.1:3000",
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
   build: {

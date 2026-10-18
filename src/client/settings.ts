@@ -2,8 +2,10 @@
  * 设置弹窗（S2 拆分）。
  *
  * 三个页签共用同一个 .modal 外壳：常规设置 / 用户管理 / 工单管理。
- * HTML 结构与类名一个字符都没改，`data-act` 名字也保持一致，
- * 所以 app.ts 的 bind()/handleAct() 不需要任何改动。
+ * HTML 结构与类名沿用原样，原有 data-act 名字一个都没改，所以 app.ts 的 bind()/handleAct()
+ * 不需要任何改动。唯一的增量是「常规设置」里新增的两个本机开关（开始界面动画、合法操作提示），
+ * 它们刻意用 data-setting-toggle 而不是 data-act，点击处理留在本文件（见下面的 document 监听），
+ * 这样 app.ts 完全不用知道它们的存在。
  *
  * 这个模块读的全部是「账号 / 用户列表 / 工单列表」这类共享状态，
  * 一律走 context.ts 的 getBridge()：
@@ -23,16 +25,75 @@ import {
   requestStatusLabel,
   roleLabel,
 } from "./format.js";
+import { applyStartScreenAnimation, startScreenAnimationEnabled } from "./start-background.js";
 import type { PublicUser, SettingsTab, UserRequestView } from "./types.js";
 
-/** 设置弹窗的「常规设置」页签：音效开关、主题色、关于项目。 */
+// ---------------------------------------------------------------------------
+// 「常规设置」里的两个本机开关
+//
+// 状态只存 localStorage，不进账号、不走服务端：
+//   ionStormStartAnimation  开始界面动画显示（读取在 start-background.ts，本模块只负责写）
+//   ionStormLegalHighlight  合法操作提示（手牌高亮在 app.ts 里按同一个键读）
+// 两个键都遵循同一套口径：没写过 = 开，"0" / "false" / "off" = 关。
+// ---------------------------------------------------------------------------
+const LEGAL_HIGHLIGHT_KEY = "ionStormLegalHighlight";
+
+/**
+ * 「合法操作提示」开关的读取口径，必须和 app.ts 里手牌高亮那份（legalHighlightEnabled）
+ * 完全一致：没写过 = 开，"0" / "false" / "off" = 关。
+ * app.ts 不 import 本模块（拆分后单向依赖），所以这条 3 行规则在两处各存一份，
+ * 唯一的约定就是键名 ionStormLegalHighlight——改口径时要两边一起改。
+ */
+function legalHighlightSwitchOn(): boolean {
+  const raw = (localStorage.getItem(LEGAL_HIGHLIGHT_KEY) ?? "").trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off";
+}
+
+/**
+ * 两个开关的点击处理刻意留在这个模块，没有塞进 app.ts 的 handleAct()：
+ * 它们只做「翻一下 localStorage → 立刻生效 → 整页重渲染一次」，不碰任何共享业务状态。
+ * 按钮也刻意不用 data-act（app.ts 的 bind() 会给页面上所有 [data-act] 各绑一次点击），
+ * 改用 data-setting-toggle，交给下面这个 document 级监听独占处理。
+ * 监听只在模块加载时注册一次，#app 被整体重建也不会失效。
+ */
+function toggleLocalSetting(name: string): void {
+  if (name === "start-animation") {
+    localStorage.setItem("ionStormStartAnimation", startScreenAnimationEnabled() ? "0" : "1");
+    // 立刻作用到已经挂在 #app 之外的那层幕布上，不用等下一次重建。
+    applyStartScreenAnimation();
+  } else if (name === "legal-highlight") {
+    localStorage.setItem(LEGAL_HIGHLIGHT_KEY, legalHighlightSwitchOn() ? "0" : "1");
+  } else {
+    return;
+  }
+  // 重渲染一次让按钮文案/高亮状态跟着变；手牌高亮也会在这次渲染里按新开关重算。
+  getBridge().render();
+}
+
+document.addEventListener("click", (event) => {
+  const trigger = (event.target as Element | null)?.closest?.<HTMLElement>("[data-setting-toggle]");
+  const name = trigger?.dataset.settingToggle;
+  if (name) toggleLocalSetting(name);
+});
+
+/** 设置弹窗的「常规设置」页签：音效、开始界面动画、合法操作提示、主题色、关于项目。 */
 function renderGeneralSettingsPane(): string {
   const color = getBridge().themeColor();
+  const startAnimationOn = startScreenAnimationEnabled();
+  const legalHighlightOn = legalHighlightSwitchOn();
   return `
     <div class="settings-group">
       <div class="settings-row">
         <div class="settings-row-text"><strong>音效</strong><span>出牌、发牌与回合提示音；关闭后全部静音。</span></div>
         <button class="btn ${audio.enabled ? "primary" : ""}" data-act="sound">${audio.enabled ? "已开启" : "已关闭"}</button>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-text"><strong>开始界面动画显示</strong><span>主界面背景的牌面缓慢滚动；关闭后牌面仍然随机铺满屏幕，但静止不动。</span></div>
+        <button class="btn ${startAnimationOn ? "primary" : ""}" data-setting-toggle="start-animation">${startAnimationOn ? "已开启" : "已关闭"}</button>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-text"><strong>合法操作提示</strong><span>把手牌里打出去会和场上溶液区 / 生成物区反应的那几张标成主题色外发光。</span></div>
+        <button class="btn ${legalHighlightOn ? "primary" : ""}" data-setting-toggle="legal-highlight">${legalHighlightOn ? "已开启" : "已关闭"}</button>
       </div>
       <div class="settings-row">
         <div class="settings-row-text"><strong>主题色</strong><span>驱动主按钮与标题图标的主色，改动实时生效，只保存在本机。</span></div>

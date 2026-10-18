@@ -23,6 +23,30 @@ import type { StartScreenMosaicCard } from "./types.js";
 const START_BG_TILE_MIN = 360;
 const START_BG_TILE_MAX = 560;
 const START_BG_CARDS_PER_TILE = 18;
+// 设置弹窗里「开始界面动画显示」写的就是这个键；本模块只读它。
+const START_ANIMATION_KEY = "ionStormStartAnimation";
+
+/**
+ * 主界面背景动画是否开启。没写过按「开」处理（老用户体验不变），
+ * 只有明确存成 "0" / "false" / "off" 才算关。
+ * 关掉后牌面依然随机生成、铺满视口，只是把 CSS 动画钉在 0% 帧上：
+ * 每次刷新位置都会重新随机，但整块幕布静止不动。
+ */
+export function startScreenAnimationEnabled(): boolean {
+  const raw = (localStorage.getItem(START_ANIMATION_KEY) ?? "").trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off";
+}
+
+/**
+ * 把当前偏好应用到已经挂载的幕布上——设置里刚切完开关时立刻生效，不用等下一次重建。
+ * 用 animation-play-state 而不是重建元素：重建会连随机方向、速度、牌面一起换掉，
+ * 玩家看到的就是「关一下开关，背景整体跳了一下」。重新打开时动画从暂停处继续。
+ */
+export function applyStartScreenAnimation(enabled = startScreenAnimationEnabled()): void {
+  const layer = document.getElementById("lobbyBg")?.querySelector<HTMLElement>(".lobby-bg-layer");
+  if (!layer) return;
+  layer.style.animationPlayState = enabled ? "" : "paused";
+}
 // 幕布方向：0° / ±45° / ±90° / ±135° / 180°。每次刷新随机取一个，
 // 用单位向量表示 —— 位移 = 单位向量 × 整数倍 TILE，方向精确、绝不会是「小角度摆动」。
 const START_BG_DIRECTIONS: readonly (readonly [number, number])[] = [
@@ -197,6 +221,9 @@ export function ensureStartScreenBackground(): void {
     const target = host ?? createStartScreenBackgroundHost();
     target.innerHTML = renderStartScreenBackground();
   }
+  // 不管这次有没有重建，都按当前偏好对齐一次：关掉动画时把幕布钉在 0% 帧（牌面照常随机铺开）。
+  // 与上面同步执行，浏览器还没机会绘制，所以不会出现「先动一帧再停」的闪烁。
+  applyStartScreenAnimation();
 }
 
 function createStartScreenBackgroundHost(): HTMLElement {

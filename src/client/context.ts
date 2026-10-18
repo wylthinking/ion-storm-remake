@@ -15,7 +15,7 @@
 import type { ResolvedCustomRules } from "../shared/custom-rules-types.js";
 import type { CustomModeLimits } from "../shared/custom-limits.js";
 import type { AnyGameState, CardId } from "../shared/types.js";
-import type { PublicUser, ActivationCode, CustomPresetFull, CustomPresetMeta, InvitationCode, PermissionsSnapshot, RoomSummary, SettingsTab, TaxSettings, UserRequestView } from "./types.js";
+import type { PublicUser, ActivationCode, CustomPresetFull, CustomPresetMeta, InvitationCode, PermissionsSnapshot, RoomSummary, ServerPayload, SettingsTab, TaxSettings, UserRequestView } from "./types.js";
 
 export type ClientGame = AnyGameState;
 
@@ -83,6 +83,24 @@ export type AppBridge = {
   // ---- S4（online.ts）：网络传输层 ----
   /** 当前登录 token（localStorage 里的 ionStormAuthToken）；未登录是空串。 */
   authToken(): string;
+  // ---- S4 批次二（online.ts）：连接 / 重连 / 心跳 / 轮询状态机 ----
+  /** 当前上下文版本号（只读；自增只发生在 app.ts 的 beginGameContextSwitch）。 */
+  gameContextVersion(): number;
+  /** 「版本号 + mode + room.code」是否仍是当前联机上下文；实现在 app.ts，全项目唯一一份。 */
+  isOnlineContext(code: string, version: number): boolean;
+  /**
+   * 收到一条已解析的 WS 消息，原样交给 app.ts 处理（online.ts 不解释消息内容）。
+   * code 是这条连接加入的房间码（回包 addBot / gameStartedAck 要用；不能用 room.code 现取，
+   * 因为处理过程中 applyServerPayload 可能已经动过 room）。
+   * reply 在这个 socket 上回包，等价于原来的 nextSocket.send(JSON.stringify(payload))。
+   */
+  onSocketMessage(code: string, message: any, reply: (payload: Record<string, unknown>) => void): void;
+  /** HTTP 轮询 / HTTP 兼容模式拿到服务端回包后，交给 app.ts 合并进对局状态。 */
+  applyServerPayload(data: ServerPayload, options?: { sound?: boolean }): void;
+  /** 房间已解散 / 已被回收 / 自己不在席位里：清干净本地状态回主界面。 */
+  leaveRemovedRoom(message?: string): void;
+  /** 取出「待补建的 AI 数量」并清零（HTTP 兼容模式下改用 REST 逐个补建）。 */
+  takePendingOnlineBots(): number;
 };
 
 let installed: AppBridge | undefined;

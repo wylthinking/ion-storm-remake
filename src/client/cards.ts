@@ -179,12 +179,13 @@ export function buildHandDisplayGroups(hand: readonly (CardId | CardInstance)[])
 }
 
 /** 整摞牌：单张时退回 renderCard，多张时输出带错位层的 .card-stack。 */
-export function renderHandStack(group: HandDisplayGroup, animatedDrawCount: number, handLength: number): string {
+export function renderHandStack(group: HandDisplayGroup, animatedDrawCount: number, handLength: number, extraClass = ""): string {
   const { card, indices } = group;
   const selectedHandIndex = getBridge().selectedHandIndex();
   if (indices.length === 1) {
     const index = indices[0];
-    return renderCard(group.sample, true, index >= handLength - animatedDrawCount ? "dealing-card" : "", index);
+    const dealing = index >= handLength - animatedDrawCount ? "dealing-card" : "";
+    return renderCard(group.sample, true, [dealing, extraClass].filter(Boolean).join(" "), index);
   }
   const count = indices.length;
   const visual = cardVisual(card);
@@ -199,7 +200,8 @@ export function renderHandStack(group: HandDisplayGroup, animatedDrawCount: numb
   const description = customCardDescription(card);
   const descriptionAttrs = cardDescriptionAttributes(card, `hand:${toggleIndex}`);
   // 整摞加紫框（已确认的方案：框住整叠、含后面错开的几张，而不是只标最上面那张）。
-  return `<button class="card-stack ${visual.cls} ${description ? "has-description" : ""} ${getBridge().aiSuggestedCardClass(card)}" style="--stack-size:${count}${visual.topColor ? `;--card-top-color:${visual.topColor}` : ""}" data-card="${escapeAttr(card)}" data-card-index="${toggleIndex}"${descriptionAttrs}>
+  // extraClass 由手牌渲染传进来（目前是「可反应」高亮），单张时在上一行已经转交给 renderCard。
+  return `<button class="card-stack ${visual.cls} ${description ? "has-description" : ""} ${getBridge().aiSuggestedCardClass(card)} ${extraClass}" style="--stack-size:${count}${visual.topColor ? `;--card-top-color:${visual.topColor}` : ""}" data-card="${escapeAttr(card)}" data-card-index="${toggleIndex}"${descriptionAttrs}>
     ${layers}
     <span class="card ${visual.cls} ${selected} ${dealing} stack-top">
       <span class="card-badges">${markBadge}</span>

@@ -137,6 +137,20 @@ export type RoomEditNotice = {
   problems?: string[];
 };
 
+/**
+ * 服务端回包：WS 消息与 REST 响应共用的一套可选字段。
+ * 原本是 app.ts 里 applyServerPayload() 的内联参数类型；S4 批次二之后 online.ts（轮询 / HTTP 兼容模式）
+ * 也要把回包递给 app.ts，所以提到这里由 app.ts / context.ts / online.ts 三方共用。
+ */
+export type ServerPayload = {
+  room?: RoomSummary;
+  game?: AnyGameState;
+  message?: string;
+  error?: string;
+  serverNow?: number;
+  duelDissolved?: boolean;
+};
+
 // ---------------------------------------------------------------------------
 // 弹窗
 // ---------------------------------------------------------------------------

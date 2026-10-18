@@ -29,3 +29,4 @@ PROJECT_MAP.md
 progress.md
 admin.env 
 start.ps1
+.tmp-*
