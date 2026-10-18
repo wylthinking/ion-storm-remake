@@ -9,11 +9,14 @@
  *      这样它们才能离开 app.ts —— 这是 context 通道的第一个真实使用者。
  */
 import { FORMULA_HTML, LABELS } from "../shared/cards.js";
+import { defaultCustomModeLimits, resolveCustomMaxBaseBet } from "../shared/custom-limits.js";
+import type { ResolvedCustomRules } from "../shared/custom-rules-types.js";
 import { compoundFormulaHtml } from "../shared/formula.js";
+import { customInitialHandSizeMaximum, effectiveInitialHandSize, normalMaxBaseBet } from "../shared/room-limits.js";
 import type { CardId, UserRole } from "../shared/types.js";
 import { getBridge } from "./context.js";
 import { escapeHtml } from "./dom.js";
-import type { PublicUser, UserRequestView } from "./types.js";
+import type { PublicUser, RoomBetHintContent, UserRequestView } from "./types.js";
 
 export function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -184,10 +187,90 @@ export function isAdminUser(user?: PublicUser): boolean {
   return Boolean(user && (user.role === "admin" || user.role === "admin-advanced" || user.role === "super-admin"));
 }
 
+/** 专属房间号排序：短的在前，等长按字典序。app.ts 与 dialogs.ts 共用。 */
+export function sortReservedRoomCodes(codes: readonly string[]): string[] {
+  return [...codes].sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+}
+
 export function requestKindLabel(kind: UserRequestView["kind"]): string {
   return ({ ticket: "工单", unban: "解封申请", nickname: "昵称修改", security: "安全审计" } as const)[kind];
 }
 
 export function requestStatusLabel(status: UserRequestView["status"]): string {
   return ({ open: "待处理", approved: "已通过", replied: "已回复", ignored: "已忽略" } as const)[status];
+}
+
+// ---------------------------------------------------------------------------
+// 用户排序 / 房间额度上限（S2 从 app.ts 搬来）
+//
+// 「编辑房间」弹窗搬进 dialogs.ts 之后，这些上限算法与排序链两边都要用；
+// 放在这一层只留一份实现，app.ts 与 dialogs.ts 共用。逻辑与原 app.ts 逐字一致，
+// 唯一的改动是 editRoomBetHintText 把「当前用户」从闭包读改成显式入参。
+// ---------------------------------------------------------------------------
+
+/** 排行榜排序：积分 > 胜率 > 场次 > 角色权重 > 注册时间 > 昵称 > id。 */
+export function sortUsersForLeaderboard(users: readonly PublicUser[]): PublicUser[] {
+  return [...users].sort(
+    (left, right) =>
+      right.points - left.points ||
+      winRateFromUser(right) - winRateFromUser(left) ||
+      right.gamesPlayed - left.gamesPlayed ||
+      rolePriority(right.role) - rolePriority(left.role) ||
+      left.createdAt - right.createdAt ||
+      left.username.localeCompare(right.username, "zh-Hans-CN") ||
+      left.id.localeCompare(right.id),
+  );
+}
+
+/** 用户列表的积分总和（批量发放积分弹窗顶部那行）。 */
+export function usersTotalPoints(users: readonly PublicUser[]): number {
+  return users.reduce((sum, user) => sum + user.points, 0);
+}
+
+/** 自定义规则里是否按人数写了不同的牌堆/发牌（写了就把房间人数锁死）。 */
+export function hasPlayerCountDeckOverrides(rules: { deck?: { byPlayers?: unknown } } | undefined): boolean {
+  const overrides = rules?.deck?.byPlayers;
+  return Boolean(overrides && typeof overrides === "object" && !Array.isArray(overrides) && Object.keys(overrides).length > 0);
+}
+
+/** 经典模式的底注上限：没登录按 100 算。 */
+export function effectiveMaxBaseBet(user?: PublicUser): number | null {
+  if (!user) return 100;
+  return user.permissions.maxBaseBet;
+}
+
+/** 自定义模式的底注上限：用户额度与权限上限取更严的那个。 */
+export function effectiveCustomMaxBaseBet(user?: PublicUser): number | null {
+  if (!user) return resolveCustomMaxBaseBet(defaultCustomModeLimits().maxBaseBet, 100);
+  return resolveCustomMaxBaseBet(user.customModeLimits?.maxBaseBet ?? defaultCustomModeLimits().maxBaseBet, user.permissions.maxBaseBet);
+}
+
+/** 自定义规则下「全局补足手牌数」的上限。 */
+export function customInitialHandSizeMax(rules: ResolvedCustomRules | undefined, players: number): number {
+  return customInitialHandSizeMaximum(rules ?? { deck: { cards: {} } }, players);
+}
+
+/** 邀请码/激活码的「这个身份是否包含该档位」判定（super-admin 恒真）。 */
+export function invitationRoleIncludes(role: UserRole, kind: "admin" | "advanced"): boolean {
+  return kind === "admin" ? role === "admin" || role === "admin-advanced" : role === "advanced" || role === "admin-advanced";
+}
+
+/** 「编辑房间」里的底注提示：总发牌数超过 100 张就提示会进入算牌大战。 */
+export function editRoomBetHintText(user: PublicUser | undefined, capacity: number, initialHandSize?: number): RoomBetHintContent {
+  const seats = Number.isInteger(capacity) && capacity >= 2 ? capacity : 2;
+  const handSize = effectiveInitialHandSize(initialHandSize, seats);
+  const total = seats * handSize;
+  const maximum = effectiveMaxBaseBet(user);
+  const minimumBet = user?.permissions.canCreateZeroBaseBet ? 0 : 1;
+  if (total > 100) {
+    const cap = maximum === null ? null : normalMaxBaseBet(maximum, total);
+    return {
+      className: "duel-hint card-war-hint",
+      text: `算牌大战：总发牌数 ${total} 张（${seats} 人 × 初始手牌 ${handSize} 张），底注上限同步降为 ${cap ?? "不限"}；当牌堆和弃牌堆较少时可能会出现预期之外的结果。`,
+    };
+  }
+  return {
+    className: "muted room-bet-hint",
+    text: `底注允许范围 ${minimumBet}-${maximum ?? "不限"}；当前总发牌数 ${total} 张，超过 100 张将进入算牌大战并降低底注上限。`,
+  };
 }

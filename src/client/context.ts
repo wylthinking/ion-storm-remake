@@ -14,7 +14,7 @@
  */
 import type { ResolvedCustomRules } from "../shared/custom-rules-types.js";
 import type { AnyGameState, CardId } from "../shared/types.js";
-import type { PublicUser, RoomSummary, SettingsTab, UserRequestView } from "./types.js";
+import type { PublicUser, ActivationCode, CustomPresetMeta, InvitationCode, PermissionsSnapshot, RoomSummary, SettingsTab, TaxSettings, UserRequestView } from "./types.js";
 
 export type ClientGame = AnyGameState;
 
@@ -51,6 +51,27 @@ export type AppBridge = {
   ticketPageError(): string;
   /** 当前登录用户能看到的工单列表。 */
   requests(): UserRequestView[];
+  /** 用户 id → 已从服务端拉到的专属房间号列表（app.ts 里的 Map，活引用）。 */
+  reservedRoomCodesByUser(): Map<string, string[]>;
+  /** 权限快照（「权限设置」弹窗与「编辑用户」共用）；未加载是 undefined。 */
+  permissionsSnapshot(): PermissionsSnapshot | undefined;
+  /** 全局税收设置（「税收管理」弹窗）；未加载是 undefined。 */
+  taxSettings(): TaxSettings | undefined;
+  /** 规则 hash → 本地缓存的已解析自定义规则（「编辑房间」读房间那份快照）。 */
+  customRulesByHash(hash: string): ResolvedCustomRules | undefined;
+  /** 已启用的规则预设列表（「编辑房间」显示预设名用）。 */
+  enabledCustomPresets(): CustomPresetMeta[];
+  // ---- S3（admin-codes.ts）：邀请码 / 激活码管理弹窗与「积分红包」弹窗 ----
+  /** 邀请码列表（邀请码管理表格的数据源）。 */
+  invitations(): InvitationCode[];
+  /** 「邀请码管理」的加载错误。 */
+  inviteModalError(): string;
+  /** 激活码列表（激活码管理表格与积分红包的数据源）。 */
+  activationCodes(): ActivationCode[];
+  /** 「激活码管理」的加载错误。 */
+  activationModalError(): string;
+  /** 注册用户数：积分红包的领取人数上限按它算（0 表示还没拉到，回退到 managedUsers.length）。 */
+  activationRegisteredUserCount(): number;
 };
 
 let installed: AppBridge | undefined;

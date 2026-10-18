@@ -418,3 +418,16 @@ export type StartScreenMosaicCard = {
 export type HandDisplayGroup = { card: CardId; indices: number[]; sample: CardId | CardInstance };
 export type CustomLimitKind = "customMaxBaseBet" | "customSettlementCap";
 export type RoomBetHintContent = { className: string; text: string };
+
+// ---------------------------------------------------------------------------
+// 权限 / 税收快照（S2：dialogs.ts 的「权限设置」「税收管理」要读，改用命名类型）
+// ---------------------------------------------------------------------------
+
+/** 服务端下发的权限快照：各身份组的规则 + 个别用户的覆盖。 */
+export type PermissionsSnapshot = {
+  rolePermissions: Record<UserRole, PermissionRule>;
+  userPermissions: Record<string, Partial<PermissionRule>>;
+};
+
+/** 全局税收设置（税率 + 起征门槛）。 */
+export type TaxSettings = { taxRatePercent: number; taxWinnerPointsThreshold?: number };
