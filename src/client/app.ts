@@ -46,23 +46,95 @@ import { parseCustomRules } from "../shared/custom-rules-parser.js";
 import { stableStringify } from "../shared/stable-json.js";
 import rulesSpecMarkdown from "../../json/CUSTOM_GAME_JSON_SPEC.md?raw";
 import rulesTemplateJson from "../../json/custom-game-template.json?raw";
+// S0 地基：从 app.ts 拆出去的基础模块。全部是「行为零变化」的搬家，call site 一处没动。
+import { audio } from "./audio.js";
+// S1：卡牌渲染层。视觉分类 / 牌面公式 / 说明气泡 / 单张与整摞的按钮 HTML / 手牌排序分组。
+import { buildHandDisplayGroups, CUSTOM_CARD_TYPE_LABELS, cardDescriptionAttributes, cardFormulaStyle, cardIdOf, cardVisual, cardVisualStyle, customCardDescription, handDisplayCompare, renderCard, renderHandStack } from "./cards.js";
+import { installBridge } from "./context.js";
+import { copyText, cssEscape, escapeAttr, escapeHtml, fieldValue, inputValue, renderGameLog, selectValue, setSelectValue, textAreaValue, toast } from "./dom.js";
+import {
+  DEFAULT_THEME_COLOR,
+  cardDisplayName,
+  compoundFormulaFromCards,
+  durationLabel,
+  formatAverage,
+  formatDate,
+  formatIonList,
+  formatIonTerm,
+  formatSignedInteger,
+  formatWinRate,
+  formulaHtml,
+  isAdminUser,
+  isHexColor,
+  pad2,
+  pointDeltaClass,
+  productKindName,
+  removeCardsForDisplay,
+  requestKindLabel,
+  requestStatusLabel,
+  roleLabel,
+  roleOptions,
+  rolePriority,
+  toLocalDateTime,
+  winRateFromUser,
+} from "./format.js";
+// S1：起始界面动态牌面背景（常量 / 缓存 / 铺瓦片 / 挂载卸载）。本模块不读任何共享状态。
+import { ensureStartScreenBackground, resetStartScreenBackground } from "./start-background.js";
+// S2：设置弹窗（常规设置 / 用户管理 / 工单管理）。状态全部走 context 的桥，HTML 未改动。
+import { renderSettingsModal } from "./settings.js";
+// 所有本地类型已外迁到 types.ts（S0 收尾）。只有两个依赖运行时值的类型留在本文件：
+// SeatView（ReturnType<typeof currentSeats>）和 NewCardCategory（typeof NEW_CARD_CATEGORIES）。
+import type {
+  ActivationCode,
+  ActivationModal,
+  ActivationNicknameColorMode,
+  ActivationTitleMode,
+  ActivationUsePolicy,
+  ActionChoiceModal,
+  AuthModal,
+  CardVisual,
+  ClientGame,
+  CreditsModal,
+  CustomLimitKind,
+  CustomPresetFull,
+  CustomPresetMeta,
+  DealFlyMeasurement,
+  DealTargetPoint,
+  DialogState,
+  DrawAnimation,
+  DuelLimitPeriod,
+  DuelLimitRule,
+  HandDisplayGroup,
+  InteractionSnapshot,
+  InteractiveElementState,
+  InvitationCode,
+  InviteModal,
+  JoinModal,
+  LeaderboardModal,
+  LuckyModal,
+  ModalState,
+  PermissionRule,
+  PlayerDeckOverride,
+  ProfileModal,
+  ProtectedAction,
+  PublicUser,
+  RoomBetHintContent,
+  RoomEditNotice,
+  RoomSummary,
+  RulesDraft,
+  RulesEditorTab,
+  SettingsModal,
+  SettingsTab,
+  SetupModal,
+  UserRequestView,
+  WinMusicManifestEntry,
+} from "./types.js";
 
-type ClientGame = AnyGameState;
 
-function cardIdOf(card: CardId | CardInstance): CardId {
-  return typeof card === "string" ? card : card.cardId;
-}
 
 function activeSeat() {
   return game ? rulesetCurrentPlayer(game) : undefined;
 }
-
-const CUSTOM_CARD_TYPE_LABELS: Record<CustomCardDef["type"], string> = {
-  ion: "离子",
-  operation: "操作",
-  special: "特殊",
-  generic: "通用",
-};
 
 const customRulesCache = new Map<string, ResolvedCustomRules>();
 const customRulesLoadRequests = new Map<string, Promise<ResolvedCustomRules>>();
@@ -75,8 +147,7 @@ function sortReservedRoomCodes(codes: readonly string[]): string[] {
   return [...codes].sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
 }
 
-type CustomPresetMeta = { id: string; displayName: string; enabled: boolean; updatedAt: number };
-type CustomPresetFull = CustomPresetMeta & { sourceDocument: unknown; createdAt: number };
+
 let customPresetsSnapshot: CustomPresetFull[] | undefined;
 let enabledCustomPresets: CustomPresetMeta[] = [];
 let enabledCustomPresetsLoading = false;
@@ -162,57 +233,7 @@ function ensureCustomRulesLoaded(code: string, snapshot: AnyGameState): void {
   })();
 }
 
-type CardVisual = { cls: string; formula: string; kind: string; topColor?: string; ionColor?: string };
 
-function cardVisual(id: CardId): CardVisual {
-  const rules = customRulesOf(game);
-  if (rules) {
-    const def = rules.cards[id];
-    if (def) {
-      const charge = def.type === "ion" && def.charge ? ` · ${def.charge > 0 ? "+" : ""}${def.charge}` : "";
-      return {
-        cls: `custom-${def.type}`,
-        formula: escapeHtml(def.displayName),
-        kind: `${CUSTOM_CARD_TYPE_LABELS[def.type]}${charge}`,
-        topColor: defaultTopColor(def),
-        ionColor: def.type === "ion" ? def.color : undefined,
-      };
-    }
-    return { cls: "custom-generic", formula: escapeHtml(id), kind: "未知" };
-  }
-  const def = CARDS[id];
-  return {
-    cls: def?.kind ?? "function",
-    formula: formulaHtml(id),
-    kind: `${kindName(def?.kind)}${def?.charge ? ` · ${def.charge > 0 ? "+" : ""}${def.charge}` : ""}`,
-  };
-}
-
-function cardVisualStyle(visual: CardVisual): string {
-  const parts: string[] = [];
-  if (visual.topColor) parts.push(`--card-top-color:${visual.topColor}`);
-  return parts.length ? ` style="${parts.join(";")}"` : "";
-}
-
-function cardFormulaStyle(id: CardId, visual: CardVisual): string {
-  if (visual.ionColor) return ` style="color:${escapeAttr(visual.ionColor)}"`;
-  return game && isCustomGame(game) ? "" : coloredIonStyle(id);
-}
-
-function customCardDescription(id: CardId): string | undefined {
-  const rules = customRulesOf(game);
-  if (!rules || Object.prototype.hasOwnProperty.call(CARDS, id)) return undefined;
-  const def = rules.cards[id];
-  if (!def || def.type === "ion" || !def.description?.trim()) return undefined;
-  return def.description.trim();
-}
-
-function cardDescriptionAttributes(id: CardId, key: string): string {
-  const description = customCardDescription(id);
-  return description
-    ? ` data-card-description="${escapeAttr(description)}" data-card-description-key="${escapeAttr(key)}"`
-    : "";
-}
 
 function isTouchInputDevice(): boolean {
   return navigator.maxTouchPoints > 0 || window.matchMedia("(hover: none), (pointer: coarse)").matches;
@@ -501,11 +522,6 @@ function renderDisplayOrderItem(def: CustomCardDef | undefined, id: string, inde
   return `<div class="display-order-item ${draggable ? "" : "readonly"}" ${draggable ? `draggable="true" data-card-id="${escapeAttr(id)}"` : ""}><span class="order-color" style="background:${escapeAttr(color)}"></span>${draggable ? `<span class="drag-handle">☰</span>` : ""}<span class="order-index">${index + 1}</span><span class="order-name">${escapeHtml(def?.displayName ?? id)}</span><small class="order-cat cat-${escapeAttr(category)}">${escapeHtml(def ? customCardCategoryLabel(def) : "未定义")}</small></div>`;
 }
 
-const LOG_ION_FORMATS = Object.keys(FORMULA_HTML)
-  .filter((card) => isIon(card))
-  .map((card) => ({ label: LABELS[card], html: FORMULA_HTML[card] }))
-  .sort((a, b) => b.label.length - a.label.length);
-
 const WEBSOCKET_HEARTBEAT_INTERVAL_MS = 2_000;
 const WEBSOCKET_RECONCILE_INTERVAL_MS = 5_000;
 const WEBSOCKET_RETRY_INTERVAL_MS = 10_000;
@@ -515,397 +531,19 @@ const HTTP_POLL_PLAYING_MIN_DELAY_MS = 5_000;
 const HTTP_POLL_LOBBY_MIN_DELAY_MS = 10_000;
 const HTTP_PRESENCE_SYNC_INTERVAL_MS = 20_000;
 
-type PublicUser = {
-  id: string;
-  username: string;
-  nickname: string;
-  role: UserRole;
-  color: string;
-  nicknameColor: string;
-  title?: string;
-  subtitle?: string;
-  hasAdvancedPerk: boolean;
-  superAdmin: boolean;
-  adminPermanent: boolean;
-  advancedPermanent: boolean;
-  adminExpiresAt?: string;
-  advancedExpiresAt?: string;
-  advancedAiAccess?: boolean;
-  advancedAiPermanent?: boolean;
-  advancedAiExpiresAt?: string;
-  taxRatePercent?: number;
-  gamesPlayed: number;
-  gamesWon: number;
-  todayGamesPlayed: number;
-  todayGamesWon: number;
-  todayGamePointsDelta: number;
-  inviteCodeUsed?: string;
-  lastLoginAt?: number;
-  points: number;
-  disabledUntil?: string;
-  disabledPermanent: boolean;
-  disabled: boolean;
-  hideFromLeaderboardWhileDisabled: boolean;
-  leaderboardHiddenUntil?: string;
-  leaderboardHiddenPermanent: boolean;
-  hiddenFromLeaderboard: boolean;
-  nicknameChangeDisabled: boolean;
-  permissions: PermissionRule;
-  permissionOverride?: Partial<PermissionRule>;
-  permissionOverrideExpiresAt?: string;
-  permissionOverridePermanent?: boolean;
-  customModeLimits: CustomModeLimits;
-  customModeLimitOverride?: CustomModeLimitGrant;
-  customModeLimitOverrideExpiresAt?: string;
-  customModeLimitOverridePermanent?: boolean;
-  hasWinMusic: boolean;
-  /** Only exposed for the account itself and authorized managers. */
-  reservedRoomCodes?: string[];
-  createdAt: number;
-  updatedAt: number;
-};
 
-type DuelLimitPeriod = "none" | "hour" | "day" | "week" | "unlimited";
-type DuelLimitRule = { period: DuelLimitPeriod; count: number | null };
 
-type PermissionRule = {
-  exchangeMin: number;
-  exchangeMax: number | null;
-  canCreateZeroBaseBet: boolean;
-  maxBaseBet: number | null;
-  duelLimit: DuelLimitRule;
-};
 
-type RoomSummary = {
-  code: string;
-  revision?: number;
-  status: string;
-  baseBet?: number;
-  rulesetMode?: "classic" | "custom";
-  customRulesHash?: string | null;
-  customPresetId?: string | null;
-  customPresetRevision?: number | null;
-  roomCodeMode?: "custom" | "reserved";
-  roomCodeKind?: "custom" | "reserved";
-  codeKind?: "custom" | "reserved";
-  isReservedRoomCode?: boolean;
-  initialHandSize?: number | null;
-  turnTimeLimitSec?: number | null;
-  openingExchangeSec?: number | null;
-  duelMode?: boolean;
-  duelKeepAvailable?: boolean;
-  capacity: number;
-  creatorAccountId: string;
-  bankerPlayerId?: string;
-  roomGamesPlayed?: Record<string, number>;
-  roomGamesWon?: Record<string, number>;
-  editNotice?: RoomEditNotice;
-  players: Array<{
-    id: string;
-    nickname: string;
-    accountId?: string;
-    profile?: PlayerProfile;
-    online: boolean;
-    bot?: boolean;
-    botOwnerId?: string;
-    seat: number;
-    handCount: number;
-    timeoutLimitMs: number;
-    timeoutStreak: number;
-    forcedAutoplay: boolean;
-    canOpeningExchange?: boolean;
-    openingExchangeDone?: boolean;
-    openingExchangeMin?: number;
-    openingExchangeMax?: number | null;
-    openingExchangeWindowMs?: number;
-    readyToStart?: boolean;
-  }>;
-};
-type RoomEditNotice = {
-  id: string;
-  capacity: number;
-  baseBet: number;
-  initialHandSize?: number | null;
-  turnTimeLimitSec?: number | null;
-  openingExchangeSec?: number | null;
-  updatedByNickname: string;
-  updatedAt: number;
-  recipientPlayerIds: string[];
-  problems?: string[];
-};
 
-type SetupModal = {
-  kind: "local" | "online";
-  ruleset: "classic" | "custom";
-  playerCount: number;
-  botCount: number;
-  baseBet: number;
-  initialHandSize: string;
-  turnTimeLimit: string;
-  openingExchangeTime: string;
-  roomCodeMode?: "custom" | "reserved";
-  roomCode?: string;
-  customRules?: ResolvedCustomRules;
-  customPresetId?: string;
-  /** A selected server preset was opened in the local editor. Submit its edited snapshot, not the preset id. */
-  customPresetEdited?: boolean;
-  customBlank?: boolean;
-  customPresetLoading?: boolean;
-  error?: string;
-};
-type JoinModal = { kind: "join"; code: string; error?: string };
-type AuthModal = { kind: "auth"; mode: "login" | "register"; username: string; inviteCode?: string; reservedRoomCode?: string; error?: string };
-type ActionChoiceModal = {
-  kind: "actions";
-  title: string;
-  titleHtml?: string;
-  actions: RulesetAction[];
-  forced?: boolean;
-  drawPrompt?: boolean;
-  submitting?: boolean;
-  stateRevision?: number;
-};
-type CreditsModal = { kind: "credits"; fromSettings?: boolean };
-type LuckyModal = { kind: "lucky"; value: number };
-type SettingsModal = { kind: "settings" };
-type LeaderboardModal = { kind: "leaderboard" };
-/** 个人中心弹窗：点用户名 → 下拉菜单 →「个人中心」。这里放账号自己的功能，管理员后台（设置 → 用户管理）只管别人。 */
-type ProfileModal = { kind: "profile" };
-/**
- * 邀请码管理弹窗。原来是占一个路由的独立页面（renderInvitePage + renderPageShell + /invite），现在和排行榜一样改成弹窗。
- * fromSettings：从「设置 → 用户管理」工具条点进来时为 true——它是覆盖掉设置弹窗打开的，关闭时得自己记住来路，
- * 退回设置弹窗而不是一路退到主界面（和 CreditsModal 同一套做法）。
- */
-type InviteModal = { kind: "invite"; fromSettings?: boolean };
-/** 激活码管理弹窗。原来是独立页面（renderActivationPage + /activation），和邀请码一起改成弹窗；fromSettings 同 InviteModal。 */
-type ActivationModal = { kind: "activation"; fromSettings?: boolean };
-type SettingsTab = "general" | "users" | "tickets";
-type ModalState = SetupModal | JoinModal | AuthModal | ActionChoiceModal | CreditsModal | LuckyModal | SettingsModal | LeaderboardModal | ProfileModal | InviteModal | ActivationModal | null;
-type InvitationCode = {
-  code: string;
-  remainingUses: number | null;
-  expiresAt?: string;
-  role: UserRole;
-  initialPoints: number;
-  initialTitle?: string;
-  initialNicknameColor?: string;
-  permissions?: Partial<PermissionRule>;
-  customModeLimits?: CustomModeLimitGrant;
-  reservedRoomCodeMode?: "user-input" | "random";
-  adminDurationMs?: number | null;
-  advancedDurationMs?: number | null;
-  adminExpiresAt?: string;
-  advancedExpiresAt?: string;
-  adminPermanent?: boolean;
-  advancedPermanent?: boolean;
-  advancedAiDurationMs?: number | null;
-  advancedAiExpiresAt?: string;
-  taxRatePercent?: number | null;
-  usePolicy?: "unlimited" | "global-total" | "global-window";
-  maxUses?: number;
-  windowMs?: number;
-  registrations?: Array<{ userId: string; usedAt: number }>;
-  createdAt: number;
-  updatedAt: number;
-};
-type ActivationUsePolicy = "unlimited" | "global-total" | "per-user-total" | "global-window" | "per-user-window";
-type ActivationTitleMode = "default" | "fixed" | "user-custom";
-type ActivationNicknameColorMode = ActivationTitleMode;
-type ActivationCode = {
-  code: string;
-  kind?: "standard" | "point-distribution";
-  usePolicy: ActivationUsePolicy;
-  maxUses: number;
-  distributionMode?: "random" | "equal";
-  totalPoints?: number;
-  windowMs?: number;
-  expiresAt?: string;
-  points: number;
-  requireNonNegativeBalance?: boolean;
-  titleMode?: ActivationTitleMode;
-  title?: string;
-  nicknameColorMode?: ActivationNicknameColorMode;
-  nicknameColor?: string;
-  adminDurationMs?: number | null;
-  advancedDurationMs?: number | null;
-  adminExpiresAt?: string;
-  advancedExpiresAt?: string;
-  advancedAiDurationMs?: number | null;
-  advancedAiExpiresAt?: string;
-  taxRatePercent?: number | null;
-  permissionDurationMs?: number | null;
-  permissions?: Partial<PermissionRule>;
-  customModeLimitDurationMs?: number | null;
-  customModeLimits?: CustomModeLimitGrant;
-  reservedRoomCodeMode?: "user-input" | "random";
-  redemptions: Array<{ userId: string; usedAt: number; points?: number }>;
-  createdAt: number;
-  updatedAt: number;
-};
-type UserRequestView = {
-  id: string;
-  kind: "ticket" | "unban" | "nickname" | "security";
-  fromUserId: string;
-  text: string;
-  privateToSuperAdmin: boolean;
-  requestedNickname?: string;
-  status: "open" | "approved" | "replied" | "ignored";
-  reply?: string;
-  replyUserId?: string;
-  createdAt: number;
-  repliedAt?: number;
-  securityLogId?: string;
-  securitySubject?: string;
-  banSnapshot?: {
-    disabledAt?: number;
-    disabledUntil?: string;
-    disabledPermanent?: boolean;
-    disabledBy?: string;
-  };
-};
-type WinMusicManifestEntry = {
-  userId: string;
-  fileName: string;
-  mimeType: string;
-  size: number;
-  sha1: string;
-  sha256: string;
-};
-type ProtectedAction =
-  | { kind: "update-user"; userId: string; patch: Record<string, unknown> }
-  | { kind: "delete-user"; userId: string }
-  | { kind: "upload-music"; userId: string; file: File; durationSeconds: number }
-  | { kind: "delete-music"; userId: string };
-type RulesEditorTab = "cards" | "deck" | "deal" | "display" | "basic" | "json";
-type PlayerDeckOverride = {
-  cards?: Record<string, number>;
-  deal?: CustomDealSeatRule[];
-};
-type RulesDraft = {
-  version: 4;
-  name: string;
-  displayName?: string;
-  description?: string;
-  setup: Record<string, unknown>;
-  cards: Record<string, CustomCardDef>;
-  combos: Record<string, CustomComboDef>;
-  deck: { cards: Record<string, number>; deal?: CustomDealSeatRule[]; byPlayers?: Record<string, PlayerDeckOverride> };
-  display?: CustomDisplay;
-};
-type DialogState =
-  | { kind: "edit-user"; userId: string; error?: string }
-  | { kind: "disable-user"; userId: string; error?: string }
-  | { kind: "delete-user"; userId: string; error?: string }
-  | { kind: "edit-invite"; code?: string; error?: string }
-  | { kind: "delete-invite"; code: string; error?: string }
-  | { kind: "edit-activation"; code?: string; error?: string }
-  | { kind: "edit-point-distribution"; code?: string; error?: string }
-  | { kind: "bulk-grant-points"; selectedUserIds?: string[]; error?: string }
-  | { kind: "delete-activation"; code: string; error?: string }
-  | { kind: "redeem-activation"; error?: string }
-  | {
-    kind: "redeem-activation-custom";
-    code: string;
-    titleMode: ActivationTitleMode;
-    nicknameColorMode: ActivationNicknameColorMode;
-    reservedRoomCodeMode?: "user-input" | "random";
-    error?: string;
-  }
-  | { kind: "permissions"; error?: string }
-  | { kind: "tax-settings"; error?: string }
-  | { kind: "request"; error?: string }
-  | { kind: "review-ticket"; requestId: string; error?: string }
-  | { kind: "kick-player"; playerId: string; error?: string }
-  | { kind: "leave-room"; local: boolean; error?: string; disband?: boolean }
-  | { kind: "edit-room"; error?: string }
-  | { kind: "view-room-rules"; selectedCardId?: string }
-  | {
-    kind: "rules-editor";
-    target: "create" | "edit-room";
-    tab: RulesEditorTab;
-    draft: RulesDraft;
-    deckFilter: "all" | CustomCardDef["type"];
-    selectedCardId?: string;
-    jsonRevision?: number;
-    error?: string;
-  }
-  | { kind: "rules-display-order"; editor: Extract<DialogState, { kind: "rules-editor" }>; order: string[] }
-  | { kind: "rules-card-create"; editor: Extract<DialogState, { kind: "rules-editor" }>; error?: string }
-  | { kind: "room-edit-notice"; notice: RoomEditNotice }
-  | { kind: "reserved-room-codes"; userId: string; codes?: string[]; editingCode?: string; error?: string }
-  | { kind: "custom-presets"; error?: string; form?: { id?: string; displayName: string; source: string }; previewResult?: string }
-  | { kind: "win-music"; userId: string }
-  | { kind: "profile-edit"; error?: string }
-  | { kind: "confirm-logout" }
-  | null;
-type DrawAnimation = {
-  id: string;
-  seatId: string;
-  count: number;
-  opening: boolean;
-  startedAt: number;
-  duration: number;
-};
-// 飞牌动画的终点：不再用写死的偏移，改成在 DOM 落地后量真实矩形再回填给 @keyframes drawCardFly。
-// 每一张 .draw-fx-card 都挂一个 data-deal-key，渲染时记下「哪个 key 飞哪个席位」，量完照着 key 回填；
-// 渲染与量取不在同一拍（renderDrawAnimations 是在 app.innerHTML 之前拼字符串的），所以要这张映射表。
-type DealFlyMeasurement = { seatId: string; count: number; opening: boolean };
-type DealTargetPoint = { x: number; y: number };
-type InteractiveElementState = {
-  key: string;
-  value?: string;
-  checked?: boolean;
-  open?: boolean;
-  scrollTop?: number;
-  scrollLeft?: number;
-  selectionStart?: number | null;
-  selectionEnd?: number | null;
-  selectionDirection?: "forward" | "backward" | "none" | null;
-};
-type InteractionSnapshot = {
-  scope: string;
-  elements: InteractiveElementState[];
-  activeKey?: string;
-  windowX: number;
-  windowY: number;
-};
+
+
+
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
-const audio = createAudio();
 const WIN_MUSIC_CACHE_NAME = "ion-storm-win-music-v1";
 const DEVICE_ID_KEY = "ionStormDeviceId";
 const deviceId = ensureDeviceId();
 const browserFingerprint = buildBrowserFingerprint();
-
-// 起始界面动态牌面背景的常量与缓存。必须定义在这里：本模块在文件中部就会直接调用
-// render()，而 render() 会立即用到它们。注意打包器不会把 let 降级为 var，因此任何
-// 声明在 render() 调用之后的 let 在首次渲染时都处于 TDZ，会直接抛 ReferenceError。
-const START_BG_TILE_MIN = 360;
-const START_BG_TILE_MAX = 560;
-const START_BG_CARDS_PER_TILE = 18;
-// 幕布方向：0° / ±45° / ±90° / ±135° / 180°。每次刷新随机取一个，
-// 用单位向量表示 —— 位移 = 单位向量 × 整数倍 TILE，方向精确、绝不会是「小角度摆动」。
-const START_BG_DIRECTIONS: readonly (readonly [number, number])[] = [
-  [1, 0], // 0°
-  [1, 1], // 45°
-  [0, 1], // 90°
-  [-1, 1], // 135°
-  [-1, 0], // 180°
-  [-1, -1], // -135°
-  [0, -1], // -90°
-  [1, -1], // -45°
-];
-const START_BG_SPEED_MIN = 16;
-const START_BG_SPEED_MAX = 42;
-// 铺瓦片时的额外余量（瓦片数）：保证即使目标位移漏算，也还有一整圈兜底，
-// 不会在屏幕边缘露出空白。
-const START_BG_TILE_MARGIN = 2;
-
-/**
- * 已生成的背景缓存：key 为视口尺寸，mosaic 为铺好的牌面 HTML。
- * 离开起始界面时清空，因此每次重新进入都会重新随机方向、速度与牌面。
- */
-const startBgCache: { key: string; html: string } = { key: "", html: "" };
 
 let game: ClientGame | undefined;
 let room: RoomSummary | undefined;
@@ -950,7 +588,7 @@ let accountMenuOpen = false;
 // 设置弹窗的当前页签。原来的「用户管理」「工单管理」独立页面已并入设置弹窗，靠这个变量切换内容。
 let currentSettingsTab: SettingsTab = "general";
 // 主题色是纯本地偏好：只写 CSS 变量，不参与任何服务端状态，也不进入 render 快照。
-const DEFAULT_THEME_COLOR = "#226b70";
+// 默认色 DEFAULT_THEME_COLOR 已搬到 format.ts（settings.ts 也要用，见那边的说明）。
 let themeColor = normalizeThemeColor(localStorage.getItem("ionStormThemeColor") ?? "");
 let pendingOnlineBots = 0;
 let dismissedWinnerId = "";
@@ -1135,6 +773,30 @@ if (!authToken && roomCodeFromLocation()) {
 } else if (!authToken && localStorage.getItem("ionStormGuestOk") !== "1") modal = { kind: "auth", mode: "login", username: "" };
 // 「用户管理」「工单管理」已并入设置弹窗，旧的 /user、/ticket 地址不再有独立页面：先归位再渲染。
 if (location.pathname === "/user" || location.pathname === "/ticket") history.replaceState({}, "", "/");
+// S0 地基：把「读状态 / 触发重渲染」的回调装进 context，拆出去的模块（dom / format / 后续的 ui/*）
+// 通过 getBridge() 访问。必须在第一次 render() 之前安装。这里给的是闭包，读到的永远是最新值，不做快照。
+installBridge({
+  game: () => game,
+  room: () => room,
+  currentUser: () => currentUser,
+  selfId: () => selfId,
+  themeColor: () => themeColor,
+  customRules: () => customRulesOf(game),
+  selectedHandIndex: () => selectedHandIndex,
+  selectedCard: () => selectedCard,
+  aiSuggestedCardClass: (card) => aiSuggestedCardClass(card),
+  render: () => render(),
+  // S2（settings.ts）：设置弹窗的三个页签。managedUsers/requests 给的是活引用，
+  // 与原实现里直接读模块级变量完全等价（调用方只做 map/find）。
+  currentSettingsTab: () => currentSettingsTab,
+  setCurrentSettingsTab: (tab) => {
+    currentSettingsTab = tab;
+  },
+  userPageError: () => userPageError,
+  managedUsers: () => managedUsers,
+  ticketPageError: () => ticketPageError,
+  requests: () => requests,
+});
 applyThemeColor(themeColor, false);
 render();
 void refreshAuth();
@@ -1201,184 +863,6 @@ window.render_game_to_text = () =>
   });
 window.advanceTime = () => renderTimer();
 
-// ---------------------------------------------------------------------------
-// 起始界面动态牌面背景
-//
-// 原理：把牌随机铺在一个 TILE×TILE 的「瓦片」里，并对每张牌在其 3×3 邻接瓦片上各
-// 复制一份。整层平移 (TILE, 0) 或 (0, TILE) 后与自身完全重合，因此让动画在
-// TILE 距离内平移就能得到无缝循环的「循环幕布」效果（方向由随机角度决定）。
-// 长距离移动通过 --bg-slide-x / --bg-slide-y 放大 TILE 得到，速度保持恒定。
-// ---------------------------------------------------------------------------
-
-type StartScreenMosaicCard = {
-  html: string;
-  x: number;
-  y: number;
-  scale: number;
-  rotate: number;
-  opacity: number;
-  z: number;
-};
-
-function randomBetween(minimum: number, maximum: number): number {
-  return minimum + Math.random() * (maximum - minimum);
-}
-
-function randomItem<T>(items: readonly T[]): T {
-  return items[Math.floor(Math.random() * items.length)];
-}
-
-/** 与 renderCard 观感一致，但不需要已开局的对局状态（起始界面无 game）。 */
-function startScreenCardFaceHtml(id: CardId): string {
-  const def = CARDS[id];
-  const color = startScreenIonColor(id);
-  const formulaStyle = color ? ` style="color:${escapeAttr(color)}"` : "";
-  return `<span class="formula"${formulaStyle}>${FORMULA_HTML[id] ?? escapeHtml(LABELS[id] ?? id)}</span><span class="kind">${escapeHtml(
-    `${kindName(def?.kind)}${def?.charge ? ` · ${def.charge > 0 ? "+" : ""}${def.charge}` : ""}`,
-  )}</span>`;
-}
-
-function startScreenIonColor(id: CardId): string | undefined {
-  const match = /color:\s*(#[0-9A-Fa-f]{3,8})/.exec(coloredIonStyle(id));
-  return match?.[1];
-}
-
-function startScreenMosaicCards(count: number = START_BG_CARDS_PER_TILE): StartScreenMosaicCard[] {
-  const deck = Object.keys(CARDS).filter((id) => CARDS[id]);
-  const cards: StartScreenMosaicCard[] = [];
-  for (let index = 0; index < count; index++) {
-    const id = randomItem(deck);
-    const def = CARDS[id];
-    cards.push({
-      html: `<div class="card bg-card ${def?.kind ?? "function"}" style="--card-top-color:${escapeAttr(defaultTopColorForKind(def?.kind ?? "function"))}">${startScreenCardFaceHtml(id)}</div>`,
-      x: Math.random(),
-      y: Math.random(),
-      scale: randomBetween(0.66, 1.32),
-      // 旋转幅度与透明度都刻意压低：背景只做「氛围幕布」，不能喧宾夺主。
-      rotate: randomBetween(-7, 7),
-      opacity: randomBetween(0.15, 0.28),
-      z: Math.floor(randomBetween(1, 60)),
-    });
-  }
-  return cards;
-}
-
-function defaultTopColorForKind(kind: CardKind): string {
-  if (kind === "cation") return "#b63e32";
-  if (kind === "anion") return "#226b70";
-  if (kind === "special") return "#c6972f";
-  return "#6b5aa9";
-}
-
-function renderStartScreenBackground(): string {
-  const width = Math.max(320, window.innerWidth);
-  const height = Math.max(320, window.innerHeight);
-  const key = `${width}x${height}`;
-  if (startBgCache.key === key && startBgCache.html) return startBgCache.html;
-
-  // 方向：从 8 个精确方向里随机取一个（0° / ±45° / ±90° / ±135° / 180°）。
-  const [dirX, dirY] = randomItem(START_BG_DIRECTIONS);
-  // TILE 取整：牌位坐标是 tileX * TILE + 瓦片内整数偏移，若 TILE 带小数，
-  // 相邻瓦片之间会累积亚像素误差，接缝处就能看出错位。
-  const tile = Math.round(
-    Math.min(
-      START_BG_TILE_MAX,
-      Math.max(START_BG_TILE_MIN, Math.max(width, height) * randomBetween(0.42, 0.58)),
-    ),
-  );
-  // 一个循环走整数个周期：位移是 TILE 的整数倍，因此终点帧与起点帧覆盖的是
-  // 同一张图案，animation 循环时不会「弹回开头」，是真正的无限滚动。
-  // 走得多一点（1~3 个周期）纯粹是为了让循环点之间隔久一些，也更有变化。
-  const cycles = Math.min(3, Math.max(1, Math.round(Math.max(width, height) / tile)));
-  const travel = tile * cycles;
-  const slideX = dirX * travel;
-  const slideY = dirY * travel;
-  // 速度按实际位移算，与上面反解出的距离一致（px/s）。
-  const speed = randomBetween(START_BG_SPEED_MIN, START_BG_SPEED_MAX);
-  const duration = Math.max(12, Math.hypot(slideX, slideY) / speed).toFixed(3);
-
-  const placements: string[] = [];
-  // 铺瓦片范围必须覆盖「视口 ∪ 视口在动画期间平移到的终点」，否则滚到末端时
-  // 某条边会露出空白。所有方向都是直线运动，起点到终点这条路径上每个位置都夹在
-  // 两个端点的并集里，所以铺「两端的并集」就够，不必铺满整个包围盒。
-  // slide 为负时动画朝坐标轴负方向走，取 [slideTiles, 0] 才落在起点一侧。
-  const baseTileX = Math.ceil(width / tile) + 1;
-  const baseTileY = Math.ceil(height / tile) + 1;
-  const slideTilesX = Math.round(slideX / tile);
-  const slideTilesY = Math.round(slideY / tile);
-  const xFrom = -baseTileX + Math.min(0, slideTilesX);
-  const xTo = baseTileX + Math.max(0, slideTilesX);
-  const yFrom = -baseTileY + Math.min(0, slideTilesY);
-  const yTo = baseTileY + Math.max(0, slideTilesY);
-  // 瓦片变多时按面积等比减少每瓦片的牌数，保持屏幕上看到的牌面密度恒定，
-  // 同时把 DOM 节点数压在合理范围（否则 ±45° 时会铺到上万张）。
-  const areaInTiles = Math.max(1, (xTo - xFrom) * (yTo - yFrom));
-  const cardCount = Math.max(
-    8,
-    Math.min(START_BG_CARDS_PER_TILE, Math.round((START_BG_CARDS_PER_TILE * 3) / areaInTiles)),
-  );
-  const cards = startScreenMosaicCards(cardCount);
-  // 每张牌的瓦片内偏移量取整为整数像素，这样相邻瓦片同名牌的间距严格等于 TILE，
-  // 与动画终点帧的平移量完全吻合，接缝处不会有亚像素错位。
-  const offsets = cards.map((card) => ({
-    card,
-    offsetX: Math.min(tile - 1, Math.round(card.x * tile)),
-    offsetY: Math.min(tile - 1, Math.round(card.y * tile)),
-  }));
-  for (let tileY = yFrom; tileY <= yTo; tileY++) {
-    for (let tileX = xFrom; tileX <= xTo; tileX++) {
-      for (const { card, offsetX, offsetY } of offsets) {
-        placements.push(
-          `<div class="bg-card-slot" style="left:${tileX * tile + offsetX}px;top:${tileY * tile + offsetY}px;z-index:${card.z};opacity:${card.opacity.toFixed(2)};transform:rotate(${card.rotate.toFixed(1)}deg) scale(${card.scale.toFixed(2)})">${card.html}</div>`,
-        );
-      }
-    }
-  }
-
-  startBgCache.key = key;
-  startBgCache.html = `
-    <div class="lobby-bg-layer" style="--bg-slide-x:${slideX}px;--bg-slide-y:${slideY}px;--bg-slide-duration:${duration}s">
-      ${placements.join("")}
-    </div>
-  `;
-  return startBgCache.html;
-}
-
-/**
- * 把背景幕布挂到 #app 之外（每次渲染都会被整体替换的是 #app 内部）。
- *
- * render() 用 app.innerHTML = ... 重建整棵树，只要背景在 #app 里面就一定会被销毁，
- * 新元素上的 CSS 动画会从 0 重新开始 —— 表现就是「点一下按钮，幕布跳回原位」。
- * 放在 #app 之外后元素终生只创建一次，动画在多次渲染之间连续不断。
- */
-function ensureStartScreenBackground(): void {
-  const host = document.getElementById("lobbyBg");
-  // 只在「容器不存在」或「缓存已失效」时重建，绝不因为 HTML 字符串差异而重写：
-  // 解析后的 innerHTML 与模板字符串的空格/换行未必逐字相同，用字符串比较做守卫会
-  // 每次都判定为「有变化」，从而重建 .lobby-bg-layer 并把动画打回起点。
-  const layer = host?.querySelector(".lobby-bg-layer");
-  if (!host || !layer || startBgCache.key !== `${Math.max(320, window.innerWidth)}x${Math.max(320, window.innerHeight)}`) {
-    const target = host ?? createStartScreenBackgroundHost();
-    target.innerHTML = renderStartScreenBackground();
-  }
-}
-
-function createStartScreenBackgroundHost(): HTMLElement {
-  const host = document.createElement("div");
-  host.id = "lobbyBg";
-  host.className = "lobby-bg";
-  host.setAttribute("aria-hidden", "true");
-  document.body.insertBefore(host, app);
-  return host;
-}
-
-/** 离开起始界面时丢弃缓存，下次重新进入会重新随机方向、速度与牌面。 */
-function resetStartScreenBackground(): void {
-  startBgCache.key = "";
-  startBgCache.html = "";
-  document.getElementById("lobbyBg")?.remove();
-}
-
 /** 主题色只接受 #rgb / #rrggbb；其它输入一律视为非法并返回空串。 */
 function normalizeThemeColor(input: string): string {
   const value = `#${input.trim().replace(/^#/, "")}`.toLowerCase();
@@ -1430,69 +914,6 @@ function todayLuckyValue(): number {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0) % 101;
-}
-
-/** 设置弹窗的「常规设置」页签：音效开关、主题色、关于项目。 */
-function renderGeneralSettingsPane(): string {
-  return `
-    <div class="settings-group">
-      <div class="settings-row">
-        <div class="settings-row-text"><strong>音效</strong><span>出牌、发牌与回合提示音；关闭后全部静音。</span></div>
-        <button class="btn ${audio.enabled ? "primary" : ""}" data-act="sound">${audio.enabled ? "已开启" : "已关闭"}</button>
-      </div>
-      <div class="settings-row">
-        <div class="settings-row-text"><strong>主题色</strong><span>驱动主按钮与标题图标的主色，改动实时生效，只保存在本机。</span></div>
-        <div class="settings-theme-controls">
-          <input type="color" data-theme-color data-state-value value="${escapeAttr(themeColor)}" aria-label="主题色取色器" />
-          <input type="text" id="settingsThemeHex" data-theme-color data-state-value maxlength="7" spellcheck="false" placeholder="${DEFAULT_THEME_COLOR}" value="${escapeAttr(themeColor)}" aria-label="主题色十六进制值" />
-          <button class="btn" data-act="settings-theme-reset">恢复默认</button>
-        </div>
-      </div>
-      <div class="settings-row">
-        <div class="settings-row-text"><strong>关于项目</strong><span>项目版本、技术栈与最后更新日期。</span></div>
-        <button class="btn" data-act="open-credits">关于项目</button>
-      </div>
-    </div>
-  `;
-}
-
-/** 综合设置弹窗。三个页签共用同一个 .modal 外壳，内容由 currentSettingsTab 决定。 */
-function renderSettingsModal(): string {
-  // 「用户管理」无权限就直接不渲染（不置灰）；「工单管理」所有登录用户都能进——普通用户看到的是
-  // 只读的自己的工单列表（见 renderTicketsPane）。未登录时两个页签都不渲染。
-  const canManage = isAdminUser(currentUser);
-  const available = (tab: SettingsTab): boolean =>
-    tab === "general" || (tab === "tickets" ? Boolean(currentUser) : canManage);
-  // 停在一个当前身份看不到的页签上（弹窗开着时退出登录、别处直接写 currentSettingsTab）就地拨回「常规设置」。
-  if (!available(currentSettingsTab)) currentSettingsTab = "general";
-  const tabs: Array<{ id: SettingsTab; label: string }> = [
-    { id: "general", label: "常规设置" },
-    { id: "users", label: "用户管理" },
-    { id: "tickets", label: "工单管理" },
-  ];
-  const visibleTabs = tabs.filter((tab) => available(tab.id));
-  const pane = currentSettingsTab === "users"
-    ? renderUsersPane()
-    : currentSettingsTab === "tickets"
-      ? renderTicketsPane()
-      : renderGeneralSettingsPane();
-  return `
-    <div class="modal-backdrop" data-backdrop-dismiss>
-      <section class="modal panel settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-        <div class="modal-head">
-          <h2 id="settingsTitle">设置</h2>
-          <button class="btn ghost" data-act="modal-close">关闭</button>
-        </div>
-        <div class="settings-tabs" role="tablist">
-          ${visibleTabs.map((tab) => {
-    const active = currentSettingsTab === tab.id;
-    return `<button class="btn settings-tab${active ? " active" : ""}" role="tab" aria-selected="${active}" data-act="settings-tab" data-tab="${tab.id}">${tab.label}</button>`;
-  }).join("")}
-        </div>
-        <div class="settings-pane">${pane}</div>
-      </section>
-    </div>
-  `;
 }
 
 /**
@@ -2297,95 +1718,6 @@ function renderTerminalHandPicker(activeId?: string): string {
   `;
 }
 
-function renderCard(card: CardId | CardInstance, clickable = false, extraClass = "", handIndex?: number, badge?: string): string {
-  if (card === "__hidden__" || (typeof card !== "string" && card.cardId === "__hidden__")) return `<div class="card hidden"><span class="formula">?</span><span class="kind">牌背</span></div>`;
-  const id = cardIdOf(card);
-  const visual = cardVisual(id);
-  const selected = clickable && selectedHandIndex === handIndex ? "selected" : "";
-  const sameHint = clickable && selectedHandIndex !== null && selectedHandIndex !== handIndex && selectedCard === id ? "same-card-hint" : "";
-  // AI 建议指向这张牌时加一圈紫色边缘。只在手牌路径求值：solution 区、生成物、悬浮窗预览那几处
-  // 调用都不传 handIndex，自动跳过（见 renderCard 的各个调用点）。
-  const aiSuggested = clickable && handIndex !== undefined ? aiSuggestedCardClass(id) : "";
-  const indexAttr = handIndex !== undefined ? ` data-card-index="${handIndex}"` : "";
-  const instance = typeof card === "string" ? undefined : card;
-  const descriptionKey = handIndex !== undefined ? `hand:${handIndex}` : instance?.instanceId ?? `card:${id}`;
-  const description = customCardDescription(id);
-  const descriptionAttrs = cardDescriptionAttributes(id, descriptionKey);
-  const interactionAttrs = clickable
-    ? `data-card="${escapeAttr(id)}"${indexAttr}`
-    : description
-      ? `aria-disabled="true"`
-      : "disabled";
-  const markBadge = instance?.marks.length
-    ? instance.marks
-      .map((mark) => `<span class="card-badge card-mark-badge" title="${escapeAttr(mark.name)}">${escapeHtml(mark.badge ?? `印：${mark.name}`)}</span>`)
-      .join("")
-    : "";
-  const life = instance?.counters.life;
-  const lifeBadge = badge ?? (typeof life === "number" ? `寿命 ${life}` : undefined);
-  return `<button class="card ${visual.cls} ${selected} ${sameHint} ${extraClass} ${aiSuggested} ${lifeBadge ? "has-uranium-life" : ""} ${description ? "has-description" : ""}"${cardVisualStyle(visual)} ${interactionAttrs}${descriptionAttrs}>
-    <span class="card-badges">
-    ${lifeBadge ? `<span class="card-badge uranium-life" title="还能触发 ${escapeAttr(lifeBadge.replace(/\D/g, ""))} 次辐射摸牌">${escapeHtml(lifeBadge)}</span>` : ""}
-    ${markBadge}
-    </span>
-    <span class="formula"${cardFormulaStyle(id, visual)}>${visual.formula}</span>
-    <span class="kind">${visual.kind}</span>
-  </button>`;
-}
-
-function handDisplayCompare(): (a: CardId, b: CardId) => number {
-  const rules = customRulesOf(game);
-  return rules ? displayOrderComparator(rules) : compareHandCards;
-}
-
-type HandDisplayGroup = { card: CardId; indices: number[]; sample: CardId | CardInstance };
-
-function buildHandDisplayGroups(hand: readonly (CardId | CardInstance)[]): HandDisplayGroup[] {
-  const rules = customRulesOf(game);
-  const ordered = hand.map((entry, index) => ({ card: cardIdOf(entry), index, raw: entry })).sort((a, b) => handDisplayCompare()(a.card, b.card) || a.index - b.index);
-  if (rules?.display?.autoStack === false) {
-    return ordered.map((entry) => ({ card: entry.card, indices: [entry.index], sample: entry.raw }));
-  }
-  const maxStack = rules?.display?.maxStack ?? 0;
-  const groups: HandDisplayGroup[] = [];
-  for (const entry of ordered) {
-    const last = groups[groups.length - 1];
-    if (last && last.card === entry.card && (maxStack === 0 || last.indices.length < maxStack)) last.indices.push(entry.index);
-    else groups.push({ card: entry.card, indices: [entry.index], sample: entry.raw });
-  }
-  return groups;
-}
-
-function renderHandStack(group: HandDisplayGroup, animatedDrawCount: number, handLength: number): string {
-  const { card, indices } = group;
-  if (indices.length === 1) {
-    const index = indices[0];
-    return renderCard(group.sample, true, index >= handLength - animatedDrawCount ? "dealing-card" : "", index);
-  }
-  const count = indices.length;
-  const visual = cardVisual(card);
-  const selected = selectedHandIndex !== null && indices.includes(selectedHandIndex) ? "selected" : "";
-  const toggleIndex = selectedHandIndex !== null && indices.includes(selectedHandIndex) ? selectedHandIndex : indices[0];
-  const dealing = indices.some((index) => index >= handLength - animatedDrawCount) ? "dealing-card" : "";
-  const layers = Array.from({ length: count - 1 }, (_, layer) => `<span class="stack-layer" style="--layer:${layer + 1}"></span>`).join("");
-  const sampleInstance = typeof group.sample === "string" ? undefined : group.sample;
-  const markBadge = sampleInstance?.marks.length
-    ? sampleInstance.marks.map((mark) => `<span class="card-badge card-mark-badge" title="${escapeAttr(mark.name)}">${escapeHtml(mark.badge ?? `印：${mark.name}`)}</span>`).join("")
-    : "";
-  const description = customCardDescription(card);
-  const descriptionAttrs = cardDescriptionAttributes(card, `hand:${toggleIndex}`);
-  // 整摞加紫框（已确认的方案：框住整叠、含后面错开的几张，而不是只标最上面那张）。
-  return `<button class="card-stack ${visual.cls} ${description ? "has-description" : ""} ${aiSuggestedCardClass(card)}" style="--stack-size:${count}${visual.topColor ? `;--card-top-color:${visual.topColor}` : ""}" data-card="${escapeAttr(card)}" data-card-index="${toggleIndex}"${descriptionAttrs}>
-    ${layers}
-    <span class="card ${visual.cls} ${selected} ${dealing} stack-top">
-      <span class="card-badges">${markBadge}</span>
-      <span class="stack-count">${count}×</span>
-      <span class="formula"${cardFormulaStyle(card, visual)}>${visual.formula}</span>
-      <span class="kind">${visual.kind}</span>
-    </span>
-  </button>`;
-}
-
 // 飞牌动画的起止坐标都以视口为基准（.draw-fx-layer 是 position:fixed; inset:0，
 // 所以层内卡片的 dx/dy 就是纯视口位移）：
 //   起点 = 视口正中央（window.innerWidth / 2, window.innerHeight / 2，见 flyOriginPoint）；
@@ -2673,72 +2005,6 @@ function renderModal(): string {
  * 「编辑个人资料」「专属房间号」「胜利音效」「兑换码」都已移到个人中心（renderProfileModal），
  * 「工单/申请」在「工单管理」页签里（renderTicketsPane），所以这个工具条里都不再出现。
  */
-function renderUsersPane(): string {
-  const self = currentUser;
-  const superAdmin = Boolean(self?.superAdmin);
-  if (!self) return `<div class="panel management-denied">请先登录后管理用户。</div>`;
-  // 工具条里剩下的按钮全是超级管理员功能，所以普通管理员（role=admin / admin-advanced）没有这一条；
-  // 与其渲染一个空白的 .settings-toolbar（它自带 margin-bottom），不如整条不输出。
-  const toolbar = superAdmin
-    ? `<div class="settings-toolbar">
-          <button class="btn" data-act="download-users-csv">下载 CSV</button>
-          <button class="btn" data-act="go-invite">邀请码</button>
-          <button class="btn" data-act="go-activation">激活码</button>
-          <button class="btn" data-act="edit-permissions">权限</button>
-          <button class="btn" data-act="edit-custom-presets">自定义模式</button>
-          <button class="btn" data-act="edit-tax-settings">税收管理</button>
-          <button class="btn" data-act="bulk-grant-points">批量操作</button>
-        </div>`
-    : "";
-  return `
-        ${toolbar}
-        ${userPageError ? `<div class="form-error">${escapeHtml(userPageError)}</div>` : ""}
-        <div class="user-table-wrap">
-          <table class="user-table user-management-table">
-            <thead>
-              <tr>
-                <th>昵称</th><th>用户名</th><th>总局</th><th>胜局</th><th>今日</th><th>积分</th><th>注册使用的邀请码</th><th>账号状态</th><th>身份</th><th>颜色</th><th class="management-expiry-column">到期</th><th>最后登录</th><th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${managedUsers.map((user) => renderUserRow(user, self)).join("")}
-            </tbody>
-          </table>
-        </div>
-  `;
-}
-
-function renderUserRow(user: PublicUser, self?: PublicUser): string {
-  const isSelf = self?.id === user.id;
-  const canSuperManage = Boolean(self?.superAdmin && !user.superAdmin);
-  const canSelfLeaderboardManage = Boolean(self?.superAdmin && isSelf);
-  const canAdminManage = Boolean(self && (self.role === "admin" || self.role === "admin-advanced") && user.role !== "admin" && user.role !== "admin-advanced" && !user.superAdmin);
-  // 「编辑」在这里是管理员工具（身份/权限/自定义额度/高级 AI/税率/禁用范围），不是「编辑个人资料」——
-  // 个人资料（昵称、密码）已移到个人中心，见 renderProfileDialog。
-  // 「专属房间号」「胜利音效」原本挤在这一列里，现在也归个人中心（renderProfileModal 的两个入口）。
-  return `
-    <tr class="user-row" data-user-id="${escapeAttr(user.id)}">
-      <td><strong style="color:${escapeAttr(user.nicknameColor)}">${escapeHtml(user.nickname)}</strong></td>
-      <td><span class="username-text">@${escapeHtml(user.username)}</span></td>
-      <td>${user.gamesPlayed}</td>
-      <td>${user.gamesWon}</td>
-      <td>${user.todayGamesWon}/${user.todayGamesPlayed}</td>
-      <td>${user.points}</td>
-      <td>${escapeHtml(user.inviteCodeUsed ?? "")}</td>
-      <td>${user.disabled ? "账号已禁用" : user.hiddenFromLeaderboard ? "仅排行榜隐藏" : "正常"}${user.disabledPermanent || user.leaderboardHiddenPermanent ? " / 永久" : ""}${user.hideFromLeaderboardWhileDisabled && user.disabled ? " / 同步移出排行榜" : ""}${user.nicknameChangeDisabled ? " / 禁止自改昵称" : ""}</td>
-      <td>${escapeHtml(roleLabel(user.role))}${user.subtitle ? ` / ${escapeHtml(user.subtitle)}` : ""}</td>
-      <td>${escapeHtml(user.nicknameColor)}</td>
-      <td class="management-expiry-column">${escapeHtml(expirySummary(user))}</td>
-      <td>${user.lastLoginAt ? escapeHtml(formatDate(user.lastLoginAt)) : ""}</td>
-      <td>
-        <button class="btn primary" data-act="open-user-edit" data-user-id="${escapeAttr(user.id)}">编辑</button>
-        ${canSuperManage || canAdminManage || canSelfLeaderboardManage ? `<button class="btn warn" data-act="open-user-disable" data-user-id="${escapeAttr(user.id)}">${user.disabled || user.hiddenFromLeaderboard ? "解禁/禁用" : "禁用"}</button>` : ""}
-        ${canSuperManage ? `<button class="btn warn" data-act="delete-user" data-user-id="${escapeAttr(user.id)}">删除</button>` : ""}
-      </td>
-    </tr>
-  `;
-}
-
 /**
  * 「邀请码」弹窗。入口是「设置 → 用户管理」工具条上的「邀请码」。
  * 原来是占一个路由的独立页面（renderInvitePage + renderPageShell + /invite 短路分支），
@@ -2857,28 +2123,6 @@ function renderActivationRow(code: ActivationCode): string {
  * 只去掉 renderPageShell 那一层页面骨架，改为返回可直接塞进页签容器的 HTML。
  * 管理员：完整工单列表 + 批复/回复；普通用户：只读列表（自己提交的内容 + 管理员回复），无操作列。
  */
-function renderTicketsPane(): string {
-  if (!currentUser) return `<div class="panel management-denied">请先登录后查看工单。</div>`;
-  const admin = isAdminUser(currentUser);
-  // 普通用户这份是只读的：列少一半，且 renderTicketRow 的 !admin 分支根本不输出批复/忽略按钮。
-  const columns = admin
-    ? "<th>类型</th><th>提交用户</th><th>内容</th><th>范围</th><th>状态</th><th>提交时间</th><th>封禁时间</th><th>封禁截止</th><th>封禁执行者</th><th>回复时间</th><th>回复者</th><th>回复</th><th>操作</th>"
-    : "<th>类型</th><th>内容</th><th>状态</th><th>提交时间</th><th>回复时间</th><th>回复</th>";
-  return `
-        <div class="settings-toolbar"><button class="btn primary" data-act="submit-ticket">提交工单/申请</button></div>
-        ${ticketPageError ? `<div class="form-error">${escapeHtml(ticketPageError)}</div>` : ""}
-        <div class="user-table-wrap">
-          <table class="user-table">
-            <thead><tr>${columns}</tr></thead>
-            <tbody>${requests.length
-      ? requests.map((request) => renderTicketRow(request, admin)).join("")
-      : `<tr><td colspan="${admin ? 13 : 6}" class="muted">暂无工单记录</td></tr>`
-    }</tbody>
-          </table>
-        </div>
-  `;
-}
-
 /**
  * 排行榜弹窗。原 renderLeaderboardPage() 的整块内容原样搬过来，只去掉 renderPageShell
  * 那层页面骨架，改为返回可直接塞进弹窗的 HTML（数据获取仍在 loadLeaderboard 里，未改动）。
@@ -2937,41 +2181,6 @@ function renderLeaderboardRow(entry: LeaderboardEntry, current: boolean): string
       <td>${entry.points}</td>
       <td>${entry.gamesWon}/${entry.gamesPlayed}</td>
       <td>${formatWinRate(entry.winRate)}</td>
-    </tr>
-  `;
-}
-
-function renderTicketRow(request: UserRequestView, admin: boolean): string {
-  const from = managedUsers.find((user) => user.id === request.fromUserId);
-  const replyUser = managedUsers.find((user) => user.id === request.replyUserId);
-  const banUser = managedUsers.find((user) => user.id === request.banSnapshot?.disabledBy);
-  if (!admin) {
-    return `
-      <tr>
-        <td>${escapeHtml(requestKindLabel(request.kind))}</td>
-        <td>${escapeHtml(request.requestedNickname ?? request.text)}</td>
-        <td>${escapeHtml(requestStatusLabel(request.status))}</td>
-        <td>${escapeHtml(formatDate(request.createdAt))}</td>
-        <td>${request.repliedAt ? escapeHtml(formatDate(request.repliedAt)) : ""}</td>
-        <td>${escapeHtml(request.reply ?? "")}</td>
-      </tr>
-    `;
-  }
-  return `
-    <tr>
-      <td>${escapeHtml(requestKindLabel(request.kind))}</td>
-      <td>${escapeHtml(from ? `${from.nickname} / @${from.username}` : request.fromUserId)}</td>
-      <td>${escapeHtml(request.requestedNickname ?? request.text)}</td>
-      <td>${request.privateToSuperAdmin ? "仅超级管理员" : "管理员可见"}</td>
-      <td>${escapeHtml(requestStatusLabel(request.status))}</td>
-      <td>${escapeHtml(formatDate(request.createdAt))}</td>
-      <td>${request.banSnapshot?.disabledAt ? escapeHtml(formatDate(request.banSnapshot.disabledAt)) : ""}</td>
-      <td>${request.banSnapshot?.disabledPermanent ? "永久" : request.banSnapshot?.disabledUntil ? escapeHtml(formatDate(Date.parse(request.banSnapshot.disabledUntil))) : ""}</td>
-      <td>${escapeHtml(banUser ? `${banUser.nickname} / @${banUser.username}` : request.banSnapshot?.disabledBy ?? "")}</td>
-      <td>${request.repliedAt ? escapeHtml(formatDate(request.repliedAt)) : ""}</td>
-      <td>${escapeHtml(replyUser ? `${replyUser.nickname} / @${replyUser.username}` : request.replyUserId ?? "")}</td>
-      <td>${escapeHtml(request.reply ?? "")}</td>
-      <td>${request.securityLogId ? `<button class="btn ai" data-act="download-security-log" data-log-id="${escapeAttr(request.securityLogId)}">下载日志</button>` : ""}${request.status === "open" ? `<button class="btn primary" data-act="review-ticket" data-request-id="${escapeAttr(request.id)}">${request.kind === "security" ? "忽略" : "批复"}</button>` : ""}</td>
     </tr>
   `;
 }
@@ -3575,7 +2784,7 @@ function defaultPermissionRule(): PermissionRule {
   };
 }
 
-type CustomLimitKind = "customMaxBaseBet" | "customSettlementCap";
+
 
 function customLimitModes(kind: CustomLimitKind): Array<{ value: string; label: string }> {
   return kind === "customMaxBaseBet"
@@ -8009,77 +7218,10 @@ function productTitleHtml(product: ClientGame["zones"]["products"][number]): str
   return `${compoundFormulaFromCards(cards)} (${productKindName(product.kind)})`;
 }
 
-function productKindName(kind: string): string {
-  return ({ solid: "沉淀", gas: "气体", weak: "弱电解质", nonexistent: "不存在物", micro: "微溶物", special: "特殊物质" } as Record<string, string>)[kind] ?? "生成物";
-}
-
-function cardDisplayName(card: CardId): string {
-  const customDef = customRulesOf(game)?.cards[card];
-  if (customDef) return customDef.displayName;
-  return LABELS[card] ?? card;
-}
-
-function formulaHtml(card: CardId): string {
-  const customDef = customRulesOf(game)?.cards[card];
-  if (customDef) return escapeHtml(customDef.displayName);
-  return FORMULA_HTML[card] ?? escapeHtml(LABELS[card] ?? card);
-}
-
-function coloredIonStyle(card: CardId): string {
-  const color = (
-    {
-      "Fe^{2+}": "#5F8A62",
-      "Fe^{3+}": "#A64B2A",
-      "Cu^{2+}": "#1677B8",
-    } as Record<CardId, string>
-  )[card];
-  return color ? ` style="color:${color}"` : "";
-}
-
-function compoundFormulaFromCards(cards: CardId[]): string {
-  const entries = Object.entries(
-    cards.reduce<Record<CardId, number>>((acc, card) => {
-      acc[card] = (acc[card] ?? 0) + 1;
-      return acc;
-    }, {}),
-  ).map(([card, count]) => ({ card, count }));
-  return compoundFormulaHtml(entries);
-}
-
-function formatIonTerm(count: number, card: CardId): string {
-  return count > 1 ? `${count} x ${formulaHtml(card)}` : formulaHtml(card);
-}
-
-function formatIonList(cards: CardId[]): string {
-  const counts = cards.reduce<Record<CardId, number>>((acc, card) => {
-    acc[card] = (acc[card] ?? 0) + 1;
-    return acc;
-  }, {});
-  return Object.entries(counts).map(([card, count]) => formatIonTerm(count, card)).join(" + ");
-}
-
-function removeCardsForDisplay(cards: CardId[], card: CardId, count: number): void {
-  for (let i = 0; i < count; i++) {
-    const index = cards.indexOf(card);
-    if (index >= 0) cards.splice(index, 1);
-  }
-}
-
-function kindName(kind?: string): string {
-  return ({ cation: "阳离子", anion: "阴离子", function: "操作牌", special: "特殊物质" } as Record<string, string>)[kind ?? ""] ?? "卡牌";
-}
-
-function roleLabel(role: UserRole): string {
-  return (
-    {
-      "super-admin": "超级管理员",
-      "admin-advanced": "管理员+高级用户",
-      admin: "管理员",
-      advanced: "高级用户",
-      normal: "普通用户",
-    } as Record<UserRole, string>
-  )[role];
-}
+// productKindName / cardDisplayName / formulaHtml / coloredIonStyle / compoundFormulaFromCards /
+// formatIonTerm / formatIonList / removeCardsForDisplay / kindName / roleLabel 已搬到 format.ts
+// （S0 地基）。其中四个需要「当前对局的自定义规则」的函数改成走 context 的 getBridge().customRules()，
+// 与原来直接读 customRulesOf(game) 完全等价。
 
 async function refreshAuth(): Promise<void> {
   if (!authToken) return;
@@ -9410,23 +8552,6 @@ function authUsernameValue(): string {
   return ((document.querySelector("#authUsername") as HTMLInputElement | null)?.value ?? "").trim();
 }
 
-function fieldValue(row: HTMLElement, field: string): string | undefined {
-  const input = row.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-user-field="${field}"]`);
-  return input?.value;
-}
-
-function inputValue(id: string): string | undefined {
-  return (document.getElementById(id) as HTMLInputElement | null)?.value;
-}
-
-function selectValue(id: string): string | undefined {
-  return (document.getElementById(id) as HTMLSelectElement | null)?.value;
-}
-
-function textAreaValue(id: string): string | undefined {
-  return (document.getElementById(id) as HTMLTextAreaElement | null)?.value;
-}
-
 function setDialogError(error: string): void {
   if (!dialog) return;
   dialog = { ...dialog, error } as DialogState;
@@ -9528,18 +8653,6 @@ function duelLimitInput(prefix: string, partial: boolean): DuelLimitRule | undef
   return { period, count };
 }
 
-function expirySummary(user: PublicUser): string {
-  const parts = [
-    user.adminPermanent ? "管理员永久" : user.adminExpiresAt ? `管理员至 ${formatDate(Date.parse(user.adminExpiresAt))}` : "",
-    user.advancedPermanent ? "高级永久" : user.advancedExpiresAt ? `高级至 ${formatDate(Date.parse(user.advancedExpiresAt))}` : "",
-    user.disabledUntil ? `禁用至 ${formatDate(Date.parse(user.disabledUntil))}` : "",
-    user.leaderboardHiddenUntil ? `排行榜隐藏至 ${formatDate(Date.parse(user.leaderboardHiddenUntil))}` : "",
-    user.permissionOverride ? (user.permissionOverridePermanent ?? true) ? "权限覆盖永久" : user.permissionOverrideExpiresAt ? `权限覆盖至 ${formatDate(Date.parse(user.permissionOverrideExpiresAt))}` : "" : "",
-    user.customModeLimitOverride ? (user.customModeLimitOverridePermanent ?? true) ? "自定义模式额度永久" : user.customModeLimitOverrideExpiresAt ? `自定义模式额度至 ${formatDate(Date.parse(user.customModeLimitOverrideExpiresAt))}` : "" : "",
-  ].filter(Boolean);
-  return parts.join(" / ");
-}
-
 function managedUsersTotalPoints(): number {
   return managedUsers.reduce((sum, user) => sum + user.points, 0);
 }
@@ -9555,55 +8668,6 @@ function sortedManagedUsersForLeaderboard(): PublicUser[] {
       left.username.localeCompare(right.username, "zh-Hans-CN") ||
       left.id.localeCompare(right.id),
   );
-}
-
-function winRateFromUser(user: Pick<PublicUser, "gamesWon" | "gamesPlayed">): number {
-  return user.gamesPlayed > 0 ? user.gamesWon / user.gamesPlayed : 0;
-}
-
-function rolePriority(role: UserRole): number {
-  return { "super-admin": 5, "admin-advanced": 4, admin: 3, advanced: 2, normal: 1 }[role];
-}
-
-function formatAverage(value: number): string {
-  if (!Number.isFinite(value)) return "0";
-  return Number.isInteger(value) ? String(value) : value.toFixed(2);
-}
-
-function formatSignedInteger(value: number): string {
-  const clean = Number.isFinite(value) ? Math.trunc(value) : 0;
-  return clean > 0 ? `+${clean}` : String(clean);
-}
-
-function pointDeltaClass(value: number): string {
-  const clean = Number.isFinite(value) ? Math.trunc(value) : 0;
-  if (clean > 0) return "point-delta-positive";
-  if (clean < 0) return "point-delta-negative";
-  return "point-delta-zero";
-}
-
-function formatDate(value: number): string {
-  if (!Number.isFinite(value)) return "";
-  const date = new Date(value);
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-}
-
-function formatWinRate(rate: number): string {
-  const percent = Math.max(0, Math.min(1, Number.isFinite(rate) ? rate : 0)) * 100;
-  return `${percent.toFixed(2).replace(/\.?0+$/, "")}%`;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function roleOptions(selected: UserRole, includeSuperAdmin: boolean): string {
-  const roles: UserRole[] = includeSuperAdmin ? ["normal", "advanced", "admin", "admin-advanced", "super-admin"] : ["normal", "advanced", "admin", "admin-advanced"];
-  return roles.map((role) => `<option value="${role}" ${role === selected ? "selected" : ""}>${escapeHtml(roleLabel(role))}</option>`).join("");
-}
-
-function isAdminUser(user?: PublicUser): boolean {
-  return Boolean(user && (user.role === "admin" || user.role === "admin-advanced" || user.role === "super-admin"));
 }
 
 function winMusicControlAccess(user: PublicUser, self?: PublicUser): { canManage: boolean; canDownload: boolean; canPlay: boolean } {
@@ -9631,11 +8695,6 @@ function setCustomLimitInputs(prefix: string, kind: CustomLimitKind, rule?: Cust
   const valueInput = document.getElementById(`${inputId}Value`) as HTMLInputElement | null;
   const raw = rule && "value" in rule ? rule.value : rule && "factor" in rule ? rule.factor : 1;
   if (valueInput) valueInput.value = String(raw);
-}
-
-function setSelectValue(id: string, value: string): void {
-  const select = document.getElementById(id) as HTMLSelectElement | null;
-  if (select) select.value = value;
 }
 
 function setDuelLimitInputs(prefix: string, rule?: Partial<DuelLimitRule>): void {
@@ -10014,12 +9073,6 @@ function activationGrantSummary(activation: ActivationCode, kind: "admin" | "adv
   return `${amount} ${unit === "day" ? "日" : "小时"}`;
 }
 
-function durationLabel(duration?: number | null): string {
-  if (duration === null) return "永久";
-  if (duration === undefined) return "";
-  return `${Math.round(duration / 86_400_000)} 日`;
-}
-
 function durationInputValue(prefix: string): number | null | false {
   const mode = selectValue(`${prefix}Mode`);
   if (mode === "none") return false;
@@ -10034,26 +9087,6 @@ function exchangeMaxOptions(selected: number | null | undefined): string {
   return options
     .map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option < 0 ? "不限" : option}</option>`)
     .join("");
-}
-
-function requestKindLabel(kind: UserRequestView["kind"]): string {
-  return ({ ticket: "工单", unban: "解封申请", nickname: "昵称修改", security: "安全审计" } as const)[kind];
-}
-
-function requestStatusLabel(status: UserRequestView["status"]): string {
-  return ({ open: "待处理", approved: "已通过", replied: "已回复", ignored: "已忽略" } as const)[status];
-}
-
-function toLocalDateTime(value?: string): string {
-  if (!value) return "";
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return "";
-  const utc8 = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-  return utc8.toISOString().slice(0, 16);
-}
-
-function cssEscape(value: string): string {
-  return CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 }
 
 function validateSetup(playerCount: number, botCount: number): string | undefined {
@@ -10132,10 +9165,6 @@ function updateEditRoomBetHint(): void {
   hint.textContent = content.text;
 }
 
-function isHexColor(value?: string): value is string {
-  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
-}
-
 function effectiveMaxBaseBet(user?: PublicUser): number | null {
   if (!user) return 100;
   return user.permissions.maxBaseBet;
@@ -10170,7 +9199,7 @@ function duelLimitText(): string {
   return `${periodText}仅可创建 ${rule.count} 个决斗房间`;
 }
 
-type RoomBetHintContent = { className: string; text: string };
+
 
 function computeRoomBetHint(baseBet: number, playerCount: number, initialHandSizeRaw: string): RoomBetHintContent {
   const maximum = effectiveMaxBaseBet(currentUser);
@@ -10300,74 +9329,8 @@ function validateRoomTimeLimitInput(raw: string, label: string): string | undefi
   }
 }
 
-function createAudio() {
-  let ctx: AudioContext | undefined;
-  let lastTick = 0;
-  return {
-    enabled: localStorage.getItem("ionStormAudio") !== "0",
-    play(name: "click" | "react" | "deal" | "tick" | "win" | "start") {
-      if (!this.enabled) return;
-      if (name === "tick" && Date.now() - lastTick < 900) return;
-      if (name === "tick") lastTick = Date.now();
-      ctx ??= new AudioContext();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      const freq = { click: 360, react: 520, deal: 240, tick: 780, win: 660, start: 440 }[name];
-      osc.frequency.value = freq;
-      osc.type = name === "react" ? "sawtooth" : "sine";
-      gain.gain.value = 0.001;
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      gain.gain.exponentialRampToValueAtTime(name === "tick" ? 0.035 : 0.06, ctx.currentTime + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (name === "win" ? 0.42 : 0.16));
-      osc.stop(ctx.currentTime + (name === "win" ? 0.45 : 0.18));
-    },
-  };
-}
-
-function toast(message: string): void {
-  const el = document.createElement("div");
-  el.className = "toast";
-  el.textContent = message;
-  document.body.append(el);
-  setTimeout(() => el.remove(), 2600);
-}
-
-async function copyText(value: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value);
-      return true;
-    }
-  } catch {
-    // Fall through to the legacy, user-gesture-friendly clipboard path.
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.setAttribute("readonly", "");
-  textarea.style.cssText = "position:fixed;opacity:0;pointer-events:none";
-  document.body.append(textarea);
-  textarea.select();
-  const copied = document.execCommand("copy");
-  textarea.remove();
-  return copied;
-}
-
-function escapeHtml(input: string): string {
-  return input.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
-}
-
-function renderGameLog(input: string): string {
-  let html = escapeHtml(input);
-  for (const ion of LOG_ION_FORMATS) html = html.replaceAll(escapeHtml(ion.label), ion.html);
-  return html;
-}
-
-function escapeAttr(input: string): string {
-  return escapeHtml(input).replace(/`/g, "&#96;");
-}
-
+// 原来的 createAudio / toast / copyText / escapeHtml / renderGameLog / escapeAttr 已搬到
+// audio.ts 与 dom.ts（S0 地基）；LOG_ION_FORMATS 跟着 renderGameLog 一起搬进 dom.ts。
 declare global {
   interface Window {
     render_game_to_text: () => string;
